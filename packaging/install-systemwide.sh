@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 BIN=target/release/rustranslator
-DESTINO=/usr/local/bin/rustranslator
+DESTINO=/usr/bin/rustranslator
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT="$UNIT_DIR/rustranslator.service"
 

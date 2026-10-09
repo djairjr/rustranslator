@@ -1,19 +1,19 @@
 [Unit]
-Description=rustranslator — servidor MCP (Streamable HTTP)
+Description=rustranslator — MCP server (Streamable HTTP)
 After=network.target
 
 [Service]
 Type=simple
-# HTTP, nao stdio: um servidor stdio morre junto com o cliente que o spawnou.
-# Este modo vive por conta propria e atende qualquer harness que aponte para o endereco.
-ExecStart=/usr/bin/rustranslator mcp --transporte http --endereco 127.0.0.1:9720
+# HTTP, not stdio: a stdio server dies with the client that spawned it.
+# This mode lives on its own and answers any harness that points at the address.
+ExecStart=/usr/bin/rustranslator mcp --transport http --address 127.0.0.1:9720
 Restart=on-failure
 RestartSec=2
 
 StandardOutput=journal
 StandardError=journal
 
-# Endurecimento: o servico so precisa da config do usuario e da rede local.
+# Hardening: the service needs only the user's configuration and the local network.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
