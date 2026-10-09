@@ -144,7 +144,7 @@ pub fn protect_slots(text: &str) -> (String, Slots) {
 }
 
 /// Puts every protected piece back where its slot is.
-pub fn restre_slots(text: &str, slots: &Slots) -> String {
+pub fn restore_slots(text: &str, slots: &Slots) -> String {
     let mut s = text.to_string();
     for (k, v) in slots.iter().enumerate() {
         s = s.replace(&format!("[[{k}]]"), v);
@@ -263,20 +263,20 @@ pub async fn translate(
     target: &str,
     text: &str,
 ) -> Result<String, LlmError> {
-    let (com_slots, slots) = protect_slots(text);
-    let prompt = format!("{}{}", TRANSLATE_PROMPT.replace("{target}", target), com_slots);
+    let (with_slots, slots) = protect_slots(text);
+    let prompt = format!("{}{}", TRANSLATE_PROMPT.replace("{target}", target), with_slots);
 
     for _ in 0..ATTEMPTS {
-        let bruto = generate(role, &prompt, false).await?;
-        let limpo = strip_wrapping(&bruto);
-        if slots.is_empty() || (0..slots.len()).all(|k| limpo.contains(&format!("[[{k}]]"))) {
-            return Ok(restre_slots(&limpo, &slots));
+        let raw = generate(role, &prompt, false).await?;
+        let cleaned = strip_wrapping(&raw);
+        if slots.is_empty() || (0..slots.len()).all(|k| cleaned.contains(&format!("[[{k}]]"))) {
+            return Ok(restore_slots(&cleaned, &slots));
         }
     }
     Err(LlmError::Refused {
         reason: format!(
-            "o modelo descartou os slots protegidos em {ATTEMPTS} tentativas — a translation \
-             perderia link ou codigo, entao e' melhor nao entrega-la"
+            "the model dropped the protected slots after {ATTEMPTS} attempts — delivering this \
+             translation would lose a link or a snippet of code, so it is refused"
         ),
     })
 }
@@ -302,21 +302,21 @@ pub async fn review(
     let prompt = format!(
         "The target locale is: {target}\n{REVIEW_PROMPT}SOURCE:\n{source}\n\nTRANSLATION:\n{translation}\n"
     );
-    let bruto = generate(role, &prompt, true).await?;
-    let d: Value = serde_json::from_str(&bruto).map_err(|e| LlmError::Response {
-        reason: format!("revisor nao devolveu JSON: {e} — {bruto:?}"),
+    let raw = generate(role, &prompt, true).await?;
+    let d: Value = serde_json::from_str(&raw).map_err(|e| LlmError::Response {
+        reason: format!("revisor nao devolveu JSON: {e} — {raw:?}"),
     })?;
 
     if d.get("ok").and_then(Value::as_bool) == Some(true) {
         return Ok(Verdict::Approved);
     }
-    let correcao = d.get("correction").and_then(Value::as_str).unwrap_or("").trim();
-    if correcao.is_empty() {
+    let correction = d.get("correction").and_then(Value::as_str).unwrap_or("").trim();
+    if correction.is_empty() {
         return Ok(Verdict::Undecided {
-            reason: format!("sem correction: {}", bruto.chars().take(120).collect::<String>()),
+            reason: format!("sem correction: {}", raw.chars().take(120).collect::<String>()),
         });
     }
-    Ok(Verdict::Corrected(correcao.to_string()))
+    Ok(Verdict::Corrected(correction.to_string()))
 }
 
 /// Strips the wrapping the model sometimes adds: quotes, or a ``` fence.
@@ -338,7 +338,7 @@ fn strip_wrapping(s: &str) -> String {
 }
 
 /// Convenience for callers that want the counts of a slot round-trip.
-pub fn conferir_slots(_original: &Slots, _volta: &str) -> BTreeMap<String, bool> {
+pub fn check_slots(_original: &Slots, _volta: &str) -> BTreeMap<String, bool> {
     BTreeMap::new()
 }
 
@@ -371,14 +371,14 @@ mod tests {
     fn restres_back_to_the_original() {
         let original = "veja [o guia](https://x.y/guia.md) e `cargo`";
         let (s, slots) = protect_slots(original);
-        assert_eq!(restre_slots(&s, &slots), original);
+        assert_eq!(restore_slots(&s, &slots), original);
     }
 
     #[test]
     fn tolerates_spaces_inside_the_slot() {
         // O modelo as vezes respira dentro dos colchetes.
         let (_, slots) = protect_slots("[x](y)");
-        assert_eq!(restre_slots("[[ 0 ]]", &slots), "[x](y)");
+        assert_eq!(restore_slots("[[ 0 ]]", &slots), "[x](y)");
     }
 
     #[test]

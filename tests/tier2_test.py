@@ -40,8 +40,10 @@ async def main() -> int:
             ferramentas = await sessao.list_tools()
             nomes = [t.name for t in ferramentas.tools]
             print(f"tools: {len(nomes)} -> {nomes}")
-            if {"echo","progress","review","translate"} - set(nomes):
-                print("FAILED: the tools were not exposed")
+            ESPERADAS = {"echo", "translate", "review", "submit", "status", "result", "cancel"}
+            faltando = ESPERADAS - set(nomes)
+            if faltando:
+                print(f"FAILED: missing tools: {sorted(faltando)}")
                 return 1
 
             texto = "prova da fase A — acentuacao e emoji: ção ✓"
@@ -60,10 +62,10 @@ async def main() -> int:
             print()
             golden = os.path.expanduser("~/.local/share/rustranslator/golden")
             prog = await sessao.call_tool(
-                "progress", {"document": "README", "dir": golden}
+                "status", {"document": "README", "dir": golden}
             )
             corpo = prog.content[0].text if prog.content else ""
-            print("progress (real registry):")
+            print("status (real registry):")
             print(corpo)
 
             if "262" not in corpo:

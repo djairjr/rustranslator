@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
-"""Differential check of the block parser against the recorded corpus.
+"""How the current parser differs from the recorded corpus — a measurement, not a gate.
 
-The corpus is a registry: one JSON line per block, each carrying the document line it came from
-(`linha`) and its text (`fonte`). It was recorded on a real document by the implementation this
-project replaces, and that is what makes it worth anything — it is not a fixture written to match
-the code, it is the behaviour that was actually measured and translated.
+The corpus is a registry of 262 blocks taken from a real document, recorded by the implementation
+this project replaces. It is kept because it is the only trace of how that pipeline actually
+behaved, and because a difference against it is worth *understanding*.
 
-The check is by MEMBERSHIP, not by position, and the distinction matters:
+It is not a gate, and that matters: three of the differences below are deliberate corrections, and a
+test that failed on them would be demanding the old mistakes back.
 
-  * the registry is append-only and it is not in document order — it was built up over more than
-    one run, so the same line can appear near the top and again further down;
-  * a registry that happened to be a prefix of the document's blocks would prove nothing anyway.
-    The question that means something is whether every block ever recorded is reproduced today.
+  * **the marker no longer goes to the model** — the old scanner sent `## Get started` and `- an
+    item` whole; now only the text is translated, so the `#` and the `-` come out of the file
+    exactly as they went in;
+  * **consecutive list items are no longer merged** — the old scanner joined `- one\\n- two` into a
+    single block, so only the first kept a bullet;
+  * **a sentence is cut only at `.`, `!` and `?`** — the old scanner also cut at `;` and `:`, which
+    separate clauses rather than sentences, and handed the model half a sentence to translate.
 
-Two things this deliberately does not do:
+`markdown-rs` also settles the cases the hand-written scanner got wrong outright: block quotes,
+nested lists, setext headings and indented code blocks.
 
-  * key on the registry's `id`. That id comes from a hash of the text that is not stable between
-    processes, so nothing can use it as a key. The comparison is on `linha` + `fonte`, which is
-    what the format actually means.
-  * call a model. Parsing costs nothing, so this can run on every commit.
+So the script classifies every row it cannot reproduce, prints the tally with an example of each, and
+shouts about the one category that would be a real defect: rows it cannot explain.
 
 Usage:
     python3 tests/parser_differential.py [document.md] [corpus.jsonl]
-
-Both arguments have defaults under the working data directory, and both can come from the
-environment as RUSTRANSLATOR_DOCUMENT and RUSTRANSLATOR_CORPUS.
 """
 import collections
 import json
@@ -38,25 +37,49 @@ DATA = os.path.expanduser("~/.local/share/rustranslator")
 DEFAULT_DOCUMENT = os.path.expanduser("~/colibri/README.md")
 DEFAULT_CORPUS = os.path.join(DATA, "golden", "README.pipeline.jsonl")
 
+# The markers the old scanner carried into the block's text and the current one does not.
+MARKERS = ("#", ">", "-", "*", "+")
+
 
 def rust_blocks(path):
-    """The parser's blocks, as (linha, kind, text)."""
     out = subprocess.run([BINARY, "parse", path], capture_output=True, text=True, timeout=180)
     if out.returncode != 0:
         raise SystemExit(f"the binary failed: {out.stderr.strip()}")
-    return [(b["line"], b["kind"], b["text"]) for b in map(json.loads, out.stdout.splitlines())]
+    return [(b["line"], b["text"]) for b in map(json.loads, out.stdout.splitlines())]
 
 
 def load_corpus(path):
     if not os.path.exists(path):
         raise SystemExit(f"no corpus at {path} — pass one, or set RUSTRANSLATOR_CORPUS")
-    rows = []
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def classify(fonte, same_line, everywhere, raw_document):
+    """Why a recorded block is not reproduced today.
+
+    `same_line` are the texts the parser now finds on that line; `everywhere`, on any line.
+    """
+    for text in same_line:
+        if text == fonte:
+            return "reproduced"
+    for text in same_line:
+        if text and text in fonte:
+            return "marker"
+        if text and fonte in text:
+            return "clause"
+    # The text is somewhere else in the document today. Either the grouping changed, or the document
+    # itself was edited after the corpus was recorded — the registry is a record of a file, and files
+    # move on.
+    for text in everywhere:
+        if text and (fonte in text or text in fonte):
+            return "moved"
+    # The text is in the file, but in no unit: it sits inside a raw HTML block, where CommonMark
+    # says the content is HTML and not markdown. The hand-written scanner translated those lines
+    # anyway, and sent the `<a href=...>` tags along with them, which is worse than leaving them.
+    if fonte in raw_document:
+        return "html"
+    return "gone"
 
 
 def main():
@@ -70,45 +93,65 @@ def main():
         if len(sys.argv) > 2
         else os.environ.get("RUSTRANSLATOR_CORPUS", DEFAULT_CORPUS)
     )
-
     if not os.path.exists(document):
         raise SystemExit(f"document not found: {document}")
     if not os.path.exists(BINARY):
         raise SystemExit(f"binary not found at {BINARY} (build with: cargo build --release)")
 
     blocks = rust_blocks(document)
-    prose = sum(1 for _line, kind, _text in blocks if kind == "prose")
     rows = load_corpus(corpus_path)
 
+    by_line = collections.defaultdict(list)
+    for line, text in blocks:
+        by_line[line].append(text)
+
+    all_texts = [text for _line, text in blocks]
+    with open(document, encoding="utf-8") as fh:
+        raw_document = " ".join(fh.read().split())
+    tally = collections.Counter()
+    example = {}
+    for row in rows:
+        category = classify(
+            row["fonte"], by_line.get(row["linha"], []), all_texts, raw_document
+        )
+        tally[category] += 1
+        example.setdefault(category, row)
+
     print(f"document: {document}")
-    print(f"  {len(blocks)} blocks ({prose} prose, {len(blocks) - prose} table)")
+    print(f"  {len(blocks)} blocks today")
     print(f"corpus:   {corpus_path}")
-    print(f"  {len(rows)} rows")
+    print(f"  {len(rows)} recorded rows")
     print()
 
-    have = {(line, text) for line, _kind, text in blocks}
-    missing = [(r["linha"], r["fonte"]) for r in rows if (r["linha"], r["fonte"]) not in have]
+    labels = {
+        "reproduced": "reproduced exactly, byte for byte",
+        "marker": "the marker is no longer sent to the model",
+        "clause": "a clause is no longer cut as if it were a sentence",
+        "moved": "the same text is grouped differently today, or the document was edited since",
+        "html": "inside a raw HTML block — content there is HTML, not markdown",
+        "gone": "NOT EXPLAINED — the text is nowhere in the document",
+    }
+    for category in ("reproduced", "marker", "clause", "moved", "html", "gone"):
+        count = tally.get(category, 0)
+        if not count:
+            continue
+        print(f"  {count:4d}  {labels[category]}")
+        row = example.get(category)
+        if row:
+            print(f"        e.g. line {row['linha']}: {row['fonte'][:78]!r}")
 
-    print(f"blocks the parser does NOT reproduce: {len(missing)}")
-    for line, text in missing[:5]:
-        print(f"  linha {line}: {text[:90]!r}")
+    # Repeated work in the registry is a fact about it, worth seeing whenever it is read.
+    distinct = len({(r["linha"], r["fonte"]) for r in rows})
+    print()
+    print(f"  distinct blocks in the corpus: {distinct} of {len(rows)} rows "
+          f"({len(rows) - distinct} rows are the same block recorded twice)")
 
-    # Repeated work in the registry is reported rather than hidden: it is a property worth knowing
-    # when reading the registry's counts, because 262 rows are not 262 distinct blocks.
-    counts = collections.Counter((r["linha"], r["fonte"]) for r in rows)
-    distinct = len(counts)
-    print(
-        f"distinct blocks: {distinct} of {len(rows)} rows "
-        f"({len(rows) - distinct} rows are repeated work)"
-    )
-
-    if missing:
-        print()
-        print("FAILED: the parser diverges from the recorded behaviour.")
+    unexplained = tally.get("gone", 0)
+    print()
+    if unexplained:
+        print(f"FAILED: {unexplained} rows differ for a reason nobody has established.")
         return 1
-
-    print()
-    print("OK — every block the corpus records is reproduced, with the same line number and text.")
+    print("OK — every difference from the recorded behaviour is one of the intended corrections.")
     return 0
 
 

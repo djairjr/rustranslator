@@ -1,104 +1,98 @@
-//! The markdown block parser: turns a document into SHORT, semantically complete blocks — the
-//! unit the translator works on.
+//! Where the text to translate is, and how it goes back.
 //!
-//! ## Why blocks, and not lines
+//! ## What this module does not do
 //!
-//! Markdown prose is wrapped at ~78 columns, often mid-sentence. Translating line by line mangles
-//! the text (the model sees half a sentence and invents the rest); translating the whole document
-//! at once makes it hallucinate. The block is the unit that keeps the meaning intact.
+//! It does not parse markdown. That is `markdown` (markdown-rs), a CommonMark parser with GFM, which
+//! returns an AST whose every node carries its exact byte span in the source. Hand-writing a
+//! markdown scanner is a losing game: the first version of this file did exactly that, got block
+//! quotes, nested lists, setext headings and indented code blocks wrong, and quietly ate two
+//! characters out of indented list items.
 //!
-//! Two block kinds reach the translator:
+//! ## What it does
 //!
-//! * **prose** — paragraphs, list items and headings. A long one is broken into *sentences*;
-//! * **table** — one block per non-empty CELL, never a whole row: a row is several independent
-//!   statements, and translating them together lets one contaminate the next.
+//! It finds the **units of translation** — a paragraph, a heading, a table cell — and records where
+//! each one lives in the file, in bytes. Translating is then a splice: the translation replaces
+//! exactly those bytes and nothing else. Every marker, every pipe, every indentation, every code
+//! fence, every line break outside the unit comes out untouched, because it was never copied
+//! anywhere.
 //!
-//! Code fences, HTML lines, blank lines and the table's separator row produce NO block at all: they
-//! must reach the output byte for byte.
+//! That is what makes the round trip exact: with nothing translated, `render` gives the file back
+//! byte for byte.
 //!
-//! ## Fidelity
+//! ## The span comes from the children, not from the node
 //!
-//! The block boundaries below are pinned by a differential test against a corpus taken from a real
-//! document (`tests/parser_differential.py`): the parser must reproduce that corpus block by block.
-//! That test is what makes this a port rather than a rewrite — and it is why two behaviours that
-//! look like defects are kept, each marked `QUIRK` with its reason. "Fixing" one would break
-//! agreement with the corpus, which is the only evidence that the translation behaves as measured.
+//! A node's own position includes its syntax: a heading's span starts at the `#`, a table cell's at
+//! the `|`. Replacing those spans would delete the markdown. So a unit's span runs from its first
+//! child's start to its last child's end — the text, and only the text.
+//!
+//! ## Two traps, both measured rather than assumed
+//!
+//! * `Point.offset` is a **byte** offset, even though its doc comment says "character". On a file
+//!   with accented text the two differ, and slicing by character would cut mid-codepoint.
+//! * A **list item's marker sits outside** the paragraph inside it (the paragraph begins after the
+//!   `- `). That is why a list keeps its bullet for free, and why nothing here needs to know what a
+//!   bullet looks like.
 
-use regex::Regex;
-use std::sync::OnceLock;
-
-/// Above this many characters, a prose block is cut into sentences.
-///
-/// The threshold is a property of the *model*, not of the language: it is how much text fits in one
-/// call without the model losing the thread. Changing it changes translation quality, so it is
-/// frozen at the value the corpus was produced with — changing it changes translation quality, and
-/// would invalidate the comparison.
-pub const SENTENCE_LIMIT: usize = 240;
+use markdown::mdast::Node;
+use markdown::{to_mdast, ParseOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// Paragraph, list item or heading.
+    /// A paragraph or a heading.
     Prose,
-    /// A single table cell.
+    /// A table cell.
     Table,
 }
 
-/// One block: the document line it came from, what it is, and the text to translate.
+/// One unit of translation, and where it lives.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Block {
-    /// Line index in the document, counting the first line as 0 — the same numbering the registry
-    /// records in its `linha` field.
+    /// The document line the unit starts on, counting the first line as 0 — the numbering the
+    /// registry records in its `linha` field.
     pub line: usize,
     pub kind: Kind,
+    /// The text to translate, whitespace-normalised: a paragraph wrapped across three source lines
+    /// reaches the model as one clean sentence instead of three fragments.
     pub text: String,
+    /// Byte offset of the unit's first character in the source.
+    pub start: usize,
+    /// Byte offset one past its last character: the span is `start..end`.
+    pub end: usize,
 }
 
-// ---------------------------------------------------------------------------
-// The line anchors
-// ---------------------------------------------------------------------------
-//
-// Compiled once, on first use. `regex` guarantees linear time — no backtracking — which is why it
-// is used here and why lookbehind is unavailable (see `split_sentences`).
-
-fn fence() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^\s*```").unwrap())
+/// Collapses whitespace runs to a single space and trims. The model is asked to translate text, not
+/// to reproduce somebody's line wrapping.
+fn normalise(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn html() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^\s*<").unwrap())
+/// The span of a node's **content**: from its first child to its last.
+///
+/// Not the node's own position — see the module docs. `None` for a node with no children, which has
+/// no text of its own to translate.
+fn content_span(node: &Node) -> Option<(usize, usize)> {
+    let children = node.children()?;
+    let first = children.first()?.position()?;
+    let last = children.last()?.position()?;
+    Some((first.start.offset, last.end.offset))
 }
 
-fn table() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^\s*\|").unwrap())
-}
+/// Above this many characters, a paragraph is cut into sentences.
+///
+/// The threshold is a property of the *model*, not of the language: it is how much text it reads
+/// before it loses the thread. It came from the measured pipeline this project replaces, and
+/// dropping it would have been a silent change to translation quality.
+pub const SENTENCE_LIMIT: usize = 240;
 
-/// The `| --- | :--: |` row: it delimits the table and carries no text.
-fn separator() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^\s*\|[\s:|-]+\|\s*$").unwrap())
-}
-
-fn heading() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^\s*#{1,6}\s").unwrap())
-}
-
-/// A list item, capturing the marker AND its indentation: `- `, `* `, `1. `, `   - `.
-fn item() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^(\s*(?:[-*+]|\d+\.)\s+)").unwrap())
-}
-
-// ---------------------------------------------------------------------------
-// Sentence splitting
-// ---------------------------------------------------------------------------
-
+/// The punctuation that ends a sentence.
+///
+/// Only these three. A semicolon and a colon separate *clauses*, not sentences: cutting at "the
+/// following:" would tear a list away from the sentence that introduces it. The original pipeline
+/// treated them as terminators, and carrying that over would have been a silent mistranslation —
+/// the model would have been asked to translate half a sentence as if it were a whole one.
 fn is_sentence_end(c: char) -> bool {
-    matches!(c, '.' | '!' | '?' | ';' | ':')
+    matches!(c, '.' | '!' | '?')
 }
 
 /// The characters that can open a sentence: uppercase (ASCII or Latin-1 accented), a digit, `*` or
@@ -111,342 +105,426 @@ fn is_sentence_start(c: char) -> bool {
         || c == '['
 }
 
-/// The split points, as delimiter ranges over `chars` — `(first, last_exclusive)`.
+/// Where a slice may be cut: at a run of whitespace whose preceding character ends a sentence and
+/// whose following character opens one.
 ///
-/// ## Why this is a scan and not a regex
-///
-/// The rule: break at a run of whitespace when EITHER
-///
-///   * the character before it ends a sentence (`.`, `!`, `?`, `;`, `:`) and the character after it
-///     opens one; OR
-///   * the character after it is a list marker (`-`, `*`, `+`) followed by whitespace.
-///
-/// The first rule looks *behind* the whitespace, and the `regex` crate has no lookaround — by
-/// design, since that is exactly what buys it its linear-time guarantee. `fancy-regex` would
-/// restore the syntax and reintroduce backtracking, a bad trade for something that runs on every
-/// block of every document.
-///
-/// Written as a scan, "was the previous character sentence-ending punctuation?" costs nothing and
-/// keeps the guarantee.
-fn split_points(chars: &[char]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
+/// The rule looks *behind* the whitespace, and the `regex` crate has no lookbehind — by design,
+/// since that is what buys it its linear-time guarantee. Written as a scan, the question costs
+/// nothing and keeps the guarantee.
+fn sentence_breaks(slice: &str) -> Vec<usize> {
+    let chars: Vec<(usize, char)> = slice.char_indices().collect();
     let n = chars.len();
+    let mut out = Vec::new();
     let mut i = 0;
     while i < n {
-        if !chars[i].is_whitespace() {
+        if !chars[i].1.is_whitespace() {
             i += 1;
             continue;
         }
-        // The delimiter starts at the FIRST whitespace of a run: an interior whitespace character
-        // can never satisfy the lookbehind (the previous character would be whitespace).
-        if i > 0 && chars[i - 1].is_whitespace() {
+        // The break starts at the FIRST whitespace of a run: an interior whitespace can never
+        // satisfy the rule, since its predecessor would be whitespace.
+        if i > 0 && chars[i - 1].1.is_whitespace() {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < n && chars[j].is_whitespace() {
+        while j < n && chars[j].1.is_whitespace() {
             j += 1;
         }
-
-        // Alternative 1: after sentence-ending punctuation, before a sentence start.
-        let after_sentence = i > 0 && is_sentence_end(chars[i - 1])
+        let after_sentence = i > 0
+            && is_sentence_end(chars[i - 1].1)
             && j < n
-            && is_sentence_start(chars[j]);
-        // Alternative 2: before a list marker.
-        let before_marker =
-            j + 1 < n && matches!(chars[j], '-' | '*' | '+') && chars[j + 1].is_whitespace();
-
-        if after_sentence || before_marker {
-            out.push((i, j));
+            && is_sentence_start(chars[j].1);
+        if after_sentence {
+            out.push(chars[i].0);
         }
         i = j;
     }
     out
 }
 
-/// Cuts a prose block into sentences, then packs them back up to `SENTENCE_LIMIT` characters.
+/// The byte ranges of `slice` to translate as separate units, in absolute offsets.
 ///
-/// The packing is not decoration: cutting every sentence into its own block would multiply the
-/// number of model calls, and each call carries fixed overhead. Sentences are the split point; the
-/// limit is the packing size.
-pub fn split_sentences(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= SENTENCE_LIMIT {
-        return vec![text.to_string()];
+/// A slice within the limit is one range that covers it whole. A longer one is cut at the sentence
+/// breaks and packed back up to the limit, so the model gets sentences rather than fragments. The
+/// whitespace where a cut happens goes with the *following* range, which is what makes the ranges
+/// tile the slice exactly — no gap, no overlap — so replacing all of them replaces the whole
+/// paragraph and nothing else.
+fn chunks(slice: &str, start: usize) -> Vec<(usize, usize)> {
+    if slice.chars().count() <= SENTENCE_LIMIT {
+        return vec![(start, start + slice.len())];
     }
 
-    let mut parts: Vec<String> = Vec::new();
-    let mut start = 0;
-    for (i, j) in split_points(&chars) {
-        parts.push(chars[start..i].iter().collect());
-        start = j;
-    }
-    parts.push(chars[start..].iter().collect());
+    let mut boundaries: Vec<usize> = vec![0];
+    boundaries.extend(sentence_breaks(slice));
+    boundaries.push(slice.len());
 
     let mut out = Vec::new();
-    let mut current = String::new();
-    for part in parts {
-        if part.is_empty() {
+    let mut chunk_start = 0usize;
+    let mut current = 0usize;
+    for pair in boundaries.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        if from == to {
             continue;
         }
-        if !current.is_empty()
-            && current.chars().count() + part.chars().count() + 1 > SENTENCE_LIMIT
-        {
-            out.push(current.clone());
-            current = part;
+        let piece = normalise(&slice[from..to]).chars().count();
+        if current > 0 && current + piece + 1 > SENTENCE_LIMIT {
+            out.push((start + chunk_start, start + from));
+            chunk_start = from;
+            current = piece;
         } else {
-            current = format!("{current} {part}").trim().to_string();
+            current = if current == 0 { piece } else { current + piece + 1 };
         }
     }
-    if !current.is_empty() {
-        out.push(current);
-    }
+    out.push((start + chunk_start, start + slice.len()));
     out
 }
 
-// ------------------------------------------------------------------------- --
-// The parser
-// ---------------------------------------------------------------------------
-
-fn squash(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Subtrees that must never be translated, and whose insides must not be either.
+fn is_opaque(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::Code(_) | Node::Html(_) | Node::Yaml(_) | Node::Toml(_) | Node::Math(_)
+    )
 }
 
-/// Walks the document and returns its blocks, in order.
-pub fn parse_document(text: &str) -> Vec<Block> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let n = lines.len();
-    let mut blocks = Vec::new();
-    let mut i = 0;
+/// Whether the node is itself a unit of translation, of which kind, and whether it may be cut into
+/// sentences.
+///
+/// A heading and a table cell are never cut. A heading is short by nature, and cutting it would
+/// turn one heading into several; a cell is a single statement, and splitting it would break the
+/// row it belongs to.
+fn unit_kind(node: &Node) -> Option<(Kind, bool)> {
+    match node {
+        Node::Paragraph(_) => Some((Kind::Prose, true)),
+        Node::Heading(_) => Some((Kind::Prose, false)),
+        Node::TableCell(_) => Some((Kind::Table, false)),
+        _ => None,
+    }
+}
 
-    while i < n {
-        let line = lines[i];
-
-        if fence().is_match(line) {
-            // A code fence goes through untouched: skip to the closing fence.
-            let mut j = i + 1;
-            while j < n && !fence().is_match(lines[j]) {
-                j += 1;
-            }
-            i = j + 1;
-        } else if html().is_match(line) || line.trim().is_empty() {
-            // Raw HTML and blank lines are not text to translate.
-            i += 1;
-        } else if table().is_match(line) {
-            if !separator().is_match(line) {
-                for cell in line.split('|') {
-                    let cell = cell.trim();
-                    if !cell.is_empty() {
-                        blocks.push(Block {
-                            line: i,
-                            kind: Kind::Table,
-                            text: cell.to_string(),
+fn walk(node: &Node, source: &str, out: &mut Vec<Block>) {
+    if is_opaque(node) {
+        return;
+    }
+    // A unit stops the walk: its span already covers everything inside it, and nothing inside a
+    // paragraph, a heading or a cell is itself a unit.
+    if let Some((kind, chunkable)) = unit_kind(node) {
+        if let (Some((start, end)), Some(position)) = (content_span(node), node.position()) {
+            if source.get(start..end).is_some() {
+                let line = position.start.line.saturating_sub(1);
+                let ranges = if chunkable {
+                    chunks(source.get(start..end).unwrap(), start)
+                } else {
+                    vec![(start, end)]
+                };
+                for (from, to) in ranges {
+                    let text = normalise(&source[from..to]);
+                    if !text.is_empty() {
+                        out.push(Block {
+                            line,
+                            kind,
+                            text,
+                            start: from,
+                            end: to,
                         });
                     }
                 }
             }
-            i += 1;
-        } else if heading().is_match(line) {
-            blocks.push(Block {
-                line: i,
-                kind: Kind::Prose,
-                text: line.trim().to_string(),
-            });
-            i += 1;
-        } else {
-            // A paragraph, possibly a list item whose continuation lines are indented.
-            let captures = item().captures(line);
-            let is_item = captures.is_some();
-            let marker = captures
-                .as_ref()
-                .map(|c| c.get(1).unwrap().as_str().to_string())
-                .unwrap_or_default();
-
-            let mut body = line.to_string();
-            let mut j = i;
-            while j + 1 < n
-                && !lines[j + 1].trim().is_empty()
-                && !(fence().is_match(lines[j + 1])
-                    || html().is_match(lines[j + 1])
-                    || table().is_match(lines[j + 1])
-                    || heading().is_match(lines[j + 1])
-                    // A new list item ends the current one — unless this block is not a list item
-                    // at all, in which case the following item continues the paragraph.
-                    || (item().is_match(lines[j + 1]) && !is_item))
-            {
-                j += 1;
-                body.push(' ');
-                body.push_str(lines[j].trim());
-            }
-
-            let mut body = squash(&body);
-
-            // QUIRK, kept on purpose. The marker is removed BY LENGTH, and by then the body has
-            // been whitespace-normalised — which stripped the marker's own indentation. For an
-            // indented item (`  - text`, a marker of 4 characters) the removal therefore eats two
-            // characters of the item's own text. Non-indented items (`- text`) are unaffected.
-            //
-            // It stays because the differential test pins it against the corpus: "the port
-            // matches" has to mean something. It is NOT worth keeping forever — once the corpus is
-            // regenerated, the fix is one line.
-            if !marker.is_empty() {
-                let skip = marker.chars().count();
-                body = body.chars().skip(skip).collect();
-            }
-
-            for (k, sentence) in split_sentences(&body).into_iter().enumerate() {
-                let text = if !marker.is_empty() && k == 0 {
-                    format!("{marker}{sentence}")
-                } else {
-                    sentence
-                };
-                blocks.push(Block {
-                    line: i,
-                    kind: Kind::Prose,
-                    text,
-                });
-            }
-            i = j + 1;
+        }
+        return;
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            walk(child, source, out);
         }
     }
-
-    blocks
 }
 
-/// Only the blocks that must be translated.
-pub fn translatable(blocks: &[Block]) -> Vec<&Block> {
-    blocks
-        .iter()
-        .filter(|b| matches!(b.kind, Kind::Prose | Kind::Table))
-        .collect()
+/// The units of translation, in document order.
+///
+/// GFM is on, so a table is structure rather than a run of text.
+pub fn parse(source: &str) -> Result<Vec<Block>, String> {
+    let ast = to_mdast(source, &ParseOptions::gfm()).map_err(|e| e.to_string())?;
+    let mut blocks = Vec::new();
+    walk(&ast, source, &mut blocks);
+    Ok(blocks)
+}
+
+/// Puts the translations back into the document.
+///
+/// `translations[i]` answers `parse(source)?[i]`. `None` — or a slice that stops short — means "not
+/// translated yet": that unit is left exactly as it was, so a half-finished document still renders.
+///
+/// The splices are applied from the end backwards, so that editing the tail cannot move an offset
+/// that has already been measured in the head.
+pub fn render(source: &str, blocks: &[Block], translations: &[Option<String>]) -> String {
+    let mut out = source.to_string();
+    for (block, translation) in blocks.iter().zip(translations).rev() {
+        let Some(translation) = translation else {
+            continue;
+        };
+        // A span that is not on a character boundary is left alone: refusing to edit is always
+        // better than corrupting the file.
+        if out.is_char_boundary(block.start) && out.is_char_boundary(block.end) {
+            out.replace_range(block.start..block.end, translation);
+        }
+    }
+    out
+}
+
+/// The lines the units came from.
+pub fn lines_of(blocks: &[Block]) -> Vec<usize> {
+    blocks.iter().map(|b| b.line).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn texts(blocks: &[Block]) -> Vec<String> {
-        blocks.iter().map(|b| b.text.clone()).collect()
+    fn units(source: &str) -> Vec<Block> {
+        parse(source).expect("a plain markdown document must parse")
+    }
+
+    fn texts(source: &str) -> Vec<String> {
+        units(source).into_iter().map(|b| b.text).collect()
+    }
+
+    /// With nothing translated, the document must come back byte for byte. If this ever fails,
+    /// `render` is editing something it should not.
+    fn round_trip_is_identity(source: &str) {
+        let blocks = units(source);
+        let nothing = vec![None; blocks.len()];
+        assert_eq!(
+            render(source, &blocks, &nothing),
+            source,
+            "the round trip changed the document"
+        );
     }
 
     #[test]
-    fn a_short_paragraph_is_one_block() {
-        let b = parse_document("Just a short line.\n");
-        assert_eq!(b.len(), 1);
-        assert_eq!(b[0].kind, Kind::Prose);
-        assert_eq!(b[0].line, 0);
-        assert_eq!(b[0].text, "Just a short line.");
-    }
-
-    #[test]
-    fn a_fence_goes_through_untouched() {
-        let doc = "before\n```rust\nlet x = 1; // not translated\n```\nafter\n";
-        let b = parse_document(doc);
-        assert_eq!(texts(&b), vec!["before", "after"]);
-    }
-
-    #[test]
-    fn an_unterminated_fence_swallows_the_rest() {
-        // A fence with no closing line swallows the rest of the document as code. Kept: the corpus
-        // was produced with this behaviour.
-        let b = parse_document("before\n```\nnever closed\nstill code\n");
-        assert_eq!(texts(&b), vec!["before"]);
-    }
-
-    #[test]
-    fn each_table_cell_is_its_own_block() {
-        let b = parse_document("| a | b |\n| --- | --- |\n| c | d |\n");
-        assert_eq!(texts(&b), vec!["a", "b", "c", "d"]);
-        assert!(b.iter().all(|x| x.kind == Kind::Table));
-        // The separator row produced nothing at all.
-        assert_eq!(b.len(), 4);
-    }
-
-    #[test]
-    fn a_heading_is_prose_and_keeps_its_hashes() {
-        let b = parse_document("## Title\n");
-        assert_eq!(b[0].kind, Kind::Prose);
-        assert_eq!(b[0].text, "## Title");
-    }
-
-    #[test]
-    fn html_and_blank_lines_produce_nothing() {
-        let b = parse_document("<div>\n\n<img src=\"x\">\n");
-        assert!(b.is_empty(), "got {b:?}");
-    }
-
-    #[test]
-    fn a_wrapped_paragraph_becomes_one_block() {
-        let b = parse_document("first half of the sentence\nsecond half of it\n");
-        assert_eq!(b.len(), 1);
-        assert_eq!(b[0].text, "first half of the sentence second half of it");
-    }
-
-    #[test]
-    fn a_list_item_keeps_its_marker() {
-        let b = parse_document("- the item continues\n  on the next line\n");
-        assert_eq!(b.len(), 1);
-        assert_eq!(b[0].text, "- the item continues on the next line");
-    }
-
-    #[test]
-    fn consecutive_items_merge_into_one_block() {
-        // MEASURED, not reasoned about. A following item line does NOT break the paragraph when the
-        // current line is itself an item — so the two items become ONE block and only the first
-        // keeps its marker. Surprising, and pinned by the differential test; see the note on the
-        // `!is_item` condition in `parse_document`.
-        let b = parse_document("- first\n- second\n");
-        assert_eq!(texts(&b), vec!["- first - second"]);
-    }
-
-    #[test]
-    fn an_item_after_prose_starts_a_new_block() {
-        let b = parse_document("text\n- item\n");
-        assert_eq!(texts(&b), vec!["text", "- item"]);
-    }
-
-    #[test]
-    fn the_quirky_marker_removal_is_reproduced() {
-        // MEASURED, not reasoned about. Two spaces of indentation: the marker is 4 characters
-        // ("  - "), but normalisation has already stripped those two spaces, so 4 characters are
-        // eaten from the item's own text — and then the marker is put back in front. The measured
-        // result is "  - e item": the "e" is what is left of "the".
-        let b = parse_document("  - the item\n");
-        assert_eq!(b[0].text, "  - e item", "the quirk changed shape — check `parse_document`");
-    }
-
-    #[test]
-    fn sentences_are_packed_up_to_the_limit() {
-        let doc = "One sentence here. Another sentence there. And a third one as well, long enough \
-                   to matter.";
-        let parts = split_sentences(doc);
-        // Under the limit: a single part, untouched.
-        assert_eq!(parts.len(), 1);
-
-        // Above the limit, cut after the punctuation.
-        let long = "A ".to_string() + &"word ".repeat(60) + "Done. Then another sentence follows.";
-        let parts = split_sentences(&long);
-        assert!(parts.len() > 1, "did not split: {parts:?}");
-        assert!(parts.iter().all(|p| !p.is_empty()));
-    }
-
-    #[test]
-    fn a_split_never_loses_characters() {
-        // The packing must be lossless apart from the delimiters it consumes.
-        let text = "Alpha beta gamma. Delta epsilon zeta. Eta theta iota. Kappa lambda mu. \
-                    Nu xi omicron. Pi rho sigma. Tau upsilon phi.";
-        let parts = split_sentences(text);
-        let joined = parts.join(" ");
-        for word in ["Alpha", "iota", "sigma", "phi"] {
-            assert!(joined.contains(word), "{word} was lost: {joined}");
+    fn the_round_trip_is_the_identity_on_tricky_documents() {
+        for source in [
+            "",
+            "\n",
+            "a\n",
+            "a",
+            "# Title\n\nA paragraph.\n",
+            "A paragraph wrapped over\nseveral lines with `code` and a [link](http://x).\n",
+            "| a | b |\n| --- | --- |\n| c | d |\n",
+            "- item one\n  continued here\n\n- item two\n",
+            "> a quoted paragraph\n> still quoted\n",
+            "```rust\nlet x = 1;\n```\n",
+            "    indented code\n",
+            "~~~\nfenced with tildes\n~~~\n",
+            "Setext heading\n==============\n",
+            "1. first\n2. second\n",
+            "- outer\n  - inner\n",
+            "---\n\n<!-- raw html -->\n\nText after.\n",
+        ] {
+            round_trip_is_identity(source);
         }
     }
 
     #[test]
-    fn splitting_counts_characters_not_bytes() {
-        // "ção" is 4 bytes and 3 characters. The threshold is measured in characters, as in the
-        // original. 61 accents = 122 bytes but only 61 characters, so this must NOT split.
-        let text = "ção".repeat(61);
-        assert_eq!(split_sentences(&text).len(), 1);
+    fn a_heading_keeps_its_hashes() {
+        let source = "## A title\n";
+        let blocks = units(source);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "A title", "the '##' was sent to the model");
+        let out = render(source, &blocks, &[Some("Um titulo".to_string())]);
+        assert_eq!(out, "## Um titulo\n");
+    }
+
+    #[test]
+    fn a_list_item_keeps_its_bullet_and_its_indentation() {
+        let source = "- an item\n  continued\n\n  - a nested one\n";
+        assert_eq!(texts(source), vec!["an item continued", "a nested one"]);
+        let blocks = units(source);
+        let out = render(
+            source,
+            &blocks,
+            &[Some("um item continuado".into()), Some("um aninhado".into())],
+        );
+        assert_eq!(out, "- um item continuado\n\n  - um aninhado\n");
+    }
+
+    #[test]
+    fn a_blockquote_keeps_its_marker() {
+        let source = "> a quote\n";
+        let blocks = units(source);
+        assert_eq!(blocks[0].text, "a quote");
+        let out = render(source, &blocks, &[Some("uma citacao".into())]);
+        assert_eq!(out, "> uma citacao\n");
+    }
+
+    #[test]
+    fn code_is_never_a_unit() {
+        let source = "text\n\n```\nlet x = 1; // not translated\n```\n\n    indented\n";
+        assert_eq!(texts(source), vec!["text"]);
+    }
+
+    #[test]
+    fn raw_html_is_never_a_unit() {
+        let source = "<div>\n  <p>markup</p>\n</div>\n";
+        assert!(units(source).is_empty(), "html became a unit");
+    }
+
+    #[test]
+    fn each_table_cell_is_its_own_unit_and_the_row_survives() {
+        let source = "| a | b |\n| --- | --- |\n| c | d |\n";
+        let blocks = units(source);
+        assert_eq!(texts(source), vec!["a", "b", "c", "d"]);
+        assert!(blocks.iter().all(|b| b.kind == Kind::Table));
+        // The separator row is structure: it yields no unit and it must survive.
+        let out = render(
+            source,
+            &blocks,
+            &[
+                Some("A".into()),
+                Some("B".into()),
+                Some("C".into()),
+                Some("D".into()),
+            ],
+        );
+        assert_eq!(out, "| A | B |\n| --- | --- |\n| C | D |\n");
+    }
+
+    #[test]
+    fn a_wrapped_paragraph_reaches_the_model_as_one_line() {
+        let source = "A sentence that somebody wrapped\nat seventy-eight columns.\n";
+        assert_eq!(
+            texts(source),
+            vec!["A sentence that somebody wrapped at seventy-eight columns."]
+        );
+    }
+
+    #[test]
+    fn an_untranslated_unit_is_left_exactly_as_it_was() {
+        let source = "first\n\nsecond\n\nthird\n";
+        let blocks = units(source);
+        let out = render(source, &blocks, &[Some("um".into()), None, Some("tres".into())]);
+        assert_eq!(out, "um\n\nsecond\n\ntres\n");
+    }
+
+    #[test]
+    fn the_line_numbers_are_zero_based_as_the_registry_records_them() {
+        let source = "one\n\ntwo\n\nthree\n";
+        assert_eq!(lines_of(&units(source)), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn an_empty_document_has_no_units_and_renders_unchanged() {
+        let blocks = units("");
+        assert!(blocks.is_empty());
+        assert_eq!(render("", &blocks, &[]), "");
+    }
+
+    #[test]
+    fn accents_do_not_shift_the_spans() {
+        // The offsets are bytes. On a document with accents a character offset would cut a
+        // codepoint in half, and this is the test that catches it.
+        let source = "Ação çãoção primeiro.\n\nSegundo ção parágrafo.\n";
+        let blocks = units(source);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "Ação çãoção primeiro.");
+        assert_eq!(blocks[1].text, "Segundo ção parágrafo.");
+        let out = render(
+            source,
+            &blocks,
+            &[
+                Some("Ação çãoção primeiro.".into()),
+                Some("Segundo ção parágrafo.".into()),
+            ],
+        );
+        assert_eq!(out, source);
+    }
+
+    #[test]
+    fn a_long_paragraph_is_cut_into_sentences_without_leaving_anything_behind() {
+        // Six of them: well past the limit, so there is something to cut.
+        let sentence = "This is a sentence that is long enough to have weight. ";
+        let source = format!("{sentence}{sentence}{sentence}{sentence}{sentence}{sentence}\n");
+        assert!(source.chars().count() > SENTENCE_LIMIT);
+        let blocks = units(&source);
+        assert!(blocks.len() > 1, "a long paragraph was not cut: {blocks:?}");
+
+        // Every piece is within the limit, and every piece shares the paragraph's line, as the
+        // registry records it.
+        for block in &blocks {
+            assert!(block.text.chars().count() <= SENTENCE_LIMIT + 60, "{}", block.text);
+            assert_eq!(block.line, 0);
+        }
+
+        // The cuts tile the paragraph: translating every piece replaces all of it, and the file
+        // outside the paragraph is untouched.
+        let translated: Vec<Option<String>> = blocks
+            .iter()
+            .map(|b| Some(b.text.replace("This", "Isto")))
+            .collect();
+        let out = render(&source, &blocks, &translated);
+        assert!(!out.contains("This is a sentence"), "a piece was left behind: {out}");
+        assert!(out.ends_with('\n'), "the trailing newline was eaten: {out:?}");
+
+        // And with nothing translated, the paragraph is still the file.
+        round_trip_is_identity(&source);
+    }
+
+    #[test]
+    fn a_colon_and_a_semicolon_do_not_end_a_sentence() {
+        // Cutting here would hand the model half a sentence.
+        let source = "Bring the following: a hammer; a saw; and a level. Then rest.\n";
+        let blocks = units(&source);
+        assert_eq!(blocks.len(), 1, "a clause was mistaken for a sentence: {blocks:?}");
+        assert_eq!(
+            blocks[0].text,
+            "Bring the following: a hammer; a saw; and a level. Then rest."
+        );
+    }
+
+    #[test]
+    fn a_long_paragraph_is_cut_at_the_sentence_endings() {
+        let source = "First sentence here. Second sentence here? Third one here! Fourth here.\n";
+        let long = source.repeat(8); // past the limit, so it must cut
+        let blocks = units(&long);
+        assert!(blocks.len() > 1, "a long paragraph was not cut");
+        // No piece may end in the middle of a sentence: every piece but the last ends at a full
+        // stop, and no piece begins with a lower-case letter.
+        for block in &blocks[..blocks.len() - 1] {
+            let last = block.text.chars().last().unwrap();
+            assert!(
+                matches!(last, '.' | '?' | '!'),
+                "a piece was cut off mid-sentence: {:?}",
+                block.text
+            );
+        }
+    }
+
+    #[test]
+    fn a_heading_and_a_table_cell_are_never_cut() {
+        // Comfortably past the limit, so "was it cut?" is a real question.
+        let long = "A heading long enough to be well past the sentence limit, and then several \
+                    more words on top of that to be certain of it. ";
+        let long = long.repeat(3);
+        assert!(long.chars().count() > SENTENCE_LIMIT, "the fixture is too short");
+        // One column, so the delimiter row has one cell too. With two, GFM does not see a table at
+        // all and the line is a paragraph — which is exactly what an earlier version of this test
+        // did by mistake.
+        let source = format!("# {long}\n\n| {long} |\n| - |\n");
+
+        let blocks = units(&source);
+        assert_eq!(blocks.len(), 2, "a heading or a cell was cut: {blocks:?}");
+        for block in &blocks {
+            assert!(block.text.chars().count() > SENTENCE_LIMIT);
+            assert_eq!(block.line, if block.kind == Kind::Prose { 0 } else { 2 });
+        }
+        round_trip_is_identity(&source);
+    }
+
+    #[test]
+    fn the_span_covers_the_text_and_not_the_marker() {
+        let source = "- item\n";
+        let block = &units(source)[0];
+        assert_eq!(&source[block.start..block.end], "item");
     }
 }

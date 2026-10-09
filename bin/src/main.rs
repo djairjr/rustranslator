@@ -17,9 +17,13 @@ rustranslator — markdown translation: the local translator writes, the cloud r
 
 USAGE:
     rustranslator config show [--config <path>]
+    rustranslator translate <file.md> [--target ll-XX] [--from N] [--limit N] [--force] [--quiet]
     rustranslator parse <file.md>
     rustranslator mcp [--transport stdio|http] [--address 127.0.0.1:9720]
 
+  `translate` walks the document, translates every block, records each verdict, and writes the
+  translated document next to the source as `<name>_<locale>.md`. It is resumable: a block already
+  in the registry is skipped, so stopping and starting again costs nothing.
   `parse` prints the document's blocks as JSON lines — one per block, with the line it came
   from. It is how the parser is inspected, and how the port is compared against the golden
   corpus: no model is called, so the comparison costs nothing and proves exactly one thing.
@@ -54,6 +58,7 @@ fn main() -> ExitCode {
 
     match (rest.first().map(|s| s.as_str()), rest.get(1).map(|s| s.as_str())) {
         (Some("config"), Some("show")) => show_config(explicit.as_deref()),
+        (Some("translate"), Some(path)) => translate_file(path, &args, explicit.as_deref()),
         (Some("parse"), Some(path)) => parse_file(path),
         (Some("mcp"), _) => serve_mcp(&args),
         (Some("config"), _) => {
@@ -130,7 +135,13 @@ fn parse_file(path: &str) -> ExitCode {
         }
     };
 
-    let blocks = rustranslator_core::parser::parse_document(&text);
+    let blocks = match rustranslator_core::parser::parse(&text) {
+        Ok(blocks) => blocks,
+        Err(e) => {
+            eprintln!("error: could not read the markdown: {e}");
+            return ExitCode::from(1);
+        }
+    };
     for block in &blocks {
         match serde_json::to_string(block) {
             Ok(line) => println!("{line}"),
@@ -145,6 +156,89 @@ fn parse_file(path: &str) -> ExitCode {
     let table = blocks.len() - prose;
     eprintln!("{} blocks ({prose} prose, {table} table)", blocks.len());
     ExitCode::SUCCESS
+}
+
+/// Translates a document, end to end.
+///
+/// The exit code says what happened without anyone having to read the output: 0 everything was
+/// approved, 1 something needs a person, 2 the run could not even start. A caller that pipes this
+/// into a script can branch on it.
+fn translate_file(path: &str, args: &[String], explicit: Option<&std::path::Path>) -> ExitCode {
+    use rustranslator_core::{config, engine};
+    use std::sync::atomic::AtomicBool;
+
+    let env = config::Environment::real();
+    let (config_path, cfg) = match config::resolve(explicit, &env) {
+        Ok(resolved) => resolved,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if let Some(warning) = config::permission_warning(&config_path, &cfg) {
+        eprintln!("{warning}");
+    }
+
+    let number = |flag: &str| -> usize {
+        flag_value(args, flag).and_then(|v| v.parse().ok()).unwrap_or(0)
+    };
+    let options = engine::Options {
+        target: flag_value(args, "--target"),
+        from: number("--from"),
+        limit: number("--limit"),
+        force: args.iter().any(|a| a == "--force"),
+        out_dir: config::expand_tilde(&cfg.output, &env),
+        doc_destination: None,
+        verbose: !args.iter().any(|a| a == "--quiet"),
+    };
+
+    let document = std::path::Path::new(path);
+    if !document.is_file() {
+        eprintln!("error: {path} is not a file");
+        return ExitCode::from(2);
+    }
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: could not start the async runtime: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Nothing installs a signal handler here on purpose: Ctrl-C kills the process, the registry
+    // already holds every finished block, and the next run picks up from there.
+    let cancel = AtomicBool::new(false);
+    let summary = match runtime.block_on(engine::run(document, &cfg, &options, &cancel)) {
+        Ok(summary) => summary,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    println!("document   {}", summary.output.display());
+    println!("report     {}", summary.report.display());
+    println!("registry   {}", summary.registry.display());
+    println!(
+        "blocks     {} in the document, {} translated now, {} already done",
+        summary.units, summary.translated, summary.skipped
+    );
+    println!(
+        "verdicts   {} approved, {} corrected, {} undecided, {} refused",
+        summary.approved, summary.corrected, summary.undecided, summary.lost
+    );
+    if summary.cancelled {
+        println!("cancelled  yes — the registry holds what was finished");
+    }
+
+    // Something to read means something to answer for.
+    if summary.corrected + summary.undecided + summary.lost > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// The value that follows a flag, if the flag is present.

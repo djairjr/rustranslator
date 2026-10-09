@@ -11,7 +11,9 @@
 //!   `config`    which server, which model, which locale
 
 pub mod config;
+pub mod engine;
 pub mod llm;
 pub mod output;
 pub mod parser;
 pub mod progress;
+pub mod registry;

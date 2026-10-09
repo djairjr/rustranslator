@@ -11,6 +11,10 @@ serde_json = "1"
 # The block parser's anchors, and the protection of markdown slots. `regex` is chosen for its
 # guarantee of linear time — no backtracking — which is exactly why it has no lookaround; the
 # patterns here are written to work without it.
+# CommonMark + GFM, with an AST whose nodes carry their byte span in the source. The
+# document is parsed by a library that has already lost the argument about block quotes,
+# nested lists and setext headings; this project transliterated a scanner once and lost it.
+markdown = "1.0"
 regex = "1"
 # HTTP client. `rustls` is pure Rust: it does not depend on the system's OpenSSL, which matters
 # because this binary also ships packaged.
