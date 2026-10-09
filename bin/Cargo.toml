@@ -1,0 +1,27 @@
+[package]
+name = "rustranslator"
+description = "Traducao de markdown: o tradutor local escreve, o revisor em nuvem confere."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rustranslator"
+path = "src/main.rs"
+
+[dependencies]
+rustranslator-core = { path = "../core" }
+
+# Servidor MCP (Fase A). `schemars` NAO entra como dependencia direta de proposito:
+# usamos o re-export `rmcp::schemars`, para nao conviverem duas versoes do mesmo crate.
+#
+# `transport-io` NAO e' opcional: a feature `server` habilita `transport-async-rw`, mas NAO
+# `transport-io`, e e' ela que traz `transport::stdio()`. Sem ela o import existe e esta
+# "configured out" — o erro fala de `no 'stdio' in 'transport'`, que nao leva a feature.
+rmcp = { version = "3.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Para hospedar o servico tower do rmcp num servidor HTTP de verdade.
+# O systemd precisa disto: um servidor stdio morre junto com o cliente que o lancou.
+axum = "0.8"

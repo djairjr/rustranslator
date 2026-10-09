@@ -1,0 +1,13 @@
+[package]
+name = "rustranslator-core"
+description = "Motor de traducao: parser de blocos, tradutor local, revisor em nuvem, registro resumivel."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Cliente HTTP. `rustls` e' Rust puro: nao depende de OpenSSL do sistema, o que importa
+# porque este binario tambem vai empacotado.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

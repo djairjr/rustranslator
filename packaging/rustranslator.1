@@ -1,0 +1,68 @@
+.TH RUSTRANSLATOR 1 "2026-10-09" "rustranslator 0.1.0" "User Commands"
+.SH NAME
+rustranslator \- markdown translation with a local translator and a cloud reviewer
+.SH SYNOPSIS
+.B rustranslator
+.I config show
+.RB [ \-\-config
+.IR path ]
+.br
+.B rustranslator
+.B mcp
+.RB [ \-\-transport
+.IR stdio | http ]
+.RB [ \-\-address
+.IR IP:PORT ]
+.SH DESCRIPTION
+.B rustranslator
+translates markdown documentation in short blocks: a local model writes the translation and a
+cloud model reviews it, so that only the flagged residue needs to be read by a person.
+.PP
+The program also exposes itself as a Model Context Protocol (MCP) server, for agents that speak
+that protocol. It offers four tools: echo, progress, translate and review.
+.SH COMMANDS
+.TP
+.B config show
+Prints the configuration in force, the path of the file it came from, and the masked API key.
+It exists so you can check what the program actually read, instead of assuming.
+.TP
+.B mcp
+Starts the MCP server. With
+.B \-\-transport stdio
+(the default) the client itself spawns the process and holds the pipes. With
+.B \-\-transport http
+the server answers on
+.BR http://ADDRESS/mcp ,
+which is the mode systemd can keep alive.
+.SH FILES
+.TP
+.I ~/.config/rustranslator/config.json
+User configuration. This is where the token lives; mode 0600 is recommended.
+.TP
+.I /etc/rustranslator/config.json
+System default, holding no secret at all.
+.TP
+.I ~/.local/share/rustranslator/
+Working directory: the block-by-block registry, the task state and the report of flagged blocks.
+.SH CONFIGURATION SEARCH ORDER
+the value of
+.BR \-\-config ,
+then
+.BR $RUSTRANSLATOR_CONFIG ,
+then
+.I ~/.config/rustranslator/config.json
+and finally
+.IR /etc/rustranslator/config.json .
+The first one that exists wins.
+.SH EXAMPLES
+.PP
+.nf
+.ft C
+rustranslator config show
+rustranslator mcp --transport http --address 127.0.0.1:9720
+.ft
+.fi
+.SH AUTHOR
+Djair Guilherme da Silva Junior <djair.jr@gmail.com>
+.SH LICENSE
+MIT

@@ -1,0 +1,24 @@
+{
+  "target": "pt-BR",
+
+  "translator": {
+    "base_url": "http://127.0.0.1:11434/v1",
+    "api_key": "",
+    "model": "hy-mt2-7b",
+    "temperature": 0.0,
+    "top_p": 0.8,
+    "top_k": 20,
+    "repeat_penalty": 1.05
+  },
+
+  "reviewer": {
+    "base_url": "http://127.0.0.1:11434/v1",
+    "api_key": "",
+    "model": "deepseek-v4.1-flash:cloud",
+    "temperature": 0.0,
+    "response_format": "json_object"
+  },
+
+  "output": "~/.local/share/rustranslator",
+  "doc_destination": "next_to_original"
+}

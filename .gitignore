@@ -1,0 +1,25 @@
+# Artefatos de build
+/target/
+
+# Pacotes
+*.deb
+*.deb.sha256
+
+# Registros de execucao e documentos traduzidos — dados de trabalho, nunca versionados
+*.pipeline.jsonl
+*.tarefa.json
+*.revisao.md
+*_pt-br.md
+*_pt-br.MD
+
+# Configuracao de verdade: contem o TOKEN. O que vai para o repositorio e' o exemplo.
+config.json
+.env
+.env.*
+
+# Backups e temporarios
+*.bak
+*.bak.*
+*.bkp.*
+*.orig
+*~

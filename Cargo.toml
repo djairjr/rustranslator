@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["core", "bin"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Djair Guilherme da Silva Junior <djair.jr@gmail.com>"]
+repository = "https://github.com/djairjr/rustranslator"
+
+[profile.release]
+lto = true
+strip = true
