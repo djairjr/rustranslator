@@ -6,7 +6,7 @@ keepalive, ciclo de vida, nem a negociacao real de versao. O cliente de verdade 
 Hermes usa por baixo. Aqui: `stdio_client` + `ClientSession` da lib `mcp`.
 
 Uso:
-    /opt/workbase-mcp/venv/bin/python3 testes/tier2_mcp.py
+    python3 tests/tier2_test.py
 
 Criterio de sucesso: o `list_tools` devolve a tool `eco`, e a chamada devolve o texto
 enviado junto de um instante.
@@ -58,9 +58,9 @@ async def main() -> int:
 
             # A tool de progresso, contra o registro REAL de 262 blocos.
             print()
-            gabarito = os.path.expanduser("~/.local/share/rustranslator/golden")
+            golden = os.path.expanduser("~/.local/share/rustranslator/golden")
             prog = await sessao.call_tool(
-                "progress", {"document": "README", "dir": gabarito}
+                "progress", {"document": "README", "dir": golden}
             )
             corpo = prog.content[0].text if prog.content else ""
             print("progress (real registry):")

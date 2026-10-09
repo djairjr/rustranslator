@@ -1,10 +1,17 @@
-//! rustranslator — translation engine.
+//! rustranslator — the translation engine.
 //!
-//! Module and function names deliberately mirror the Python pipeline this project replaces
-//! (`pipeline_ptbr.py`), so the migration can be checked function by function and anyone who
-//! knew the Python recognises the Rust.
+//! The shape of the domain, end to end: a document becomes **blocks**, a block becomes a
+//! **translation**, a translation becomes a **verdict**, and only the flagged verdicts are ever
+//! read by a person. Each module is one of those steps.
+//!
+//!   `parser`    document -> blocks
+//!   `llm`       a block -> a translation, and (source, translation) -> a verdict
+//!   `output`    where the translated document lands
+//!   `progress`  the registry on disk, and what it says about a job
+//!   `config`    which server, which model, which locale
 
 pub mod config;
 pub mod llm;
-pub mod progress;
 pub mod output;
+pub mod parser;
+pub mod progress;

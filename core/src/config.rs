@@ -60,19 +60,21 @@ impl Environment {
 #[serde(deny_unknown_fields)]
 pub struct Role {
     pub base_url: String,
-    /// Empty means "do NOT send the Authorization header" — which is right for a local Ollama
-    /// daemon, who already holds its own credential.
+    /// Empty means "do NOT send the Authorization header" — which is right for a local server
+    /// such as Ollama, which already holds its own credential.
     #[serde(default)]
     pub api_key: String,
+    /// The model's name **as the server knows it** (e.g. the Ollama tag `hy-mt2-7b`, Tencent's
+    /// Hunyuan-MT). The server is whatever answers on `base_url`; this field names the model.
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
-    /// Only Ollama accepts this. That is why it lives in the translator role.
+    /// Only Ollama's API accepts this. That is why it lives in the translator role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
-    /// Same: only Ollama accepts it.
+    /// Same: only Ollama's API accepts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat_penalty: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

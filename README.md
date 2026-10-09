@@ -36,8 +36,9 @@ A. PARSER      the markdown becomes SHORT, semantically complete blocks:
                prose and list items become SENTENCES; a table cell becomes a cell;
                headings and code fences are left untouched.
                         |
-B. TRANSLATOR  a local model (Ollama) translates the block, with links, URLs,
-               inline code and placeholders protected as slots.
+B. TRANSLATOR  a local model translates the block, with links, URLs, inline code and
+               placeholders. The model is Tencent's Hunyuan-MT (Hy-MT2), served by Ollama —
+               Ollama is the server, not the model, and any OpenAI-compatible one will do.
                         |
 C. REVIEWER    a CLOUD model reads (source, translation) and answers
                {"ok": true} or {"ok": false, "correction": "..."}.
@@ -50,6 +51,11 @@ own (measured: 13% on a 420-target document). The reviewer does not replace the 
 **measures the residue**, and only that residue reaches a human. The reviewer must be stronger
 than the translator; using a local judge from another family was tried and **approved bad
 translations**.
+
+Concretely, the pair this was built and measured with: the translator is **Tencent's Hunyuan-MT
+(Hy-MT2-7B)**, a model trained specifically for translation, running locally through Ollama; the
+reviewer is a general-purpose cloud model. Ollama is only the server in front of them — the code
+speaks the OpenAI dialect and does not care which server answers.
 
 **Why short blocks.** Markdown prose is wrapped at ~78 columns, mid-sentence. Translating line by
 line mangles the text; translating the whole document at once hallucinates. The block is the unit
@@ -242,15 +248,15 @@ One JSON file, with a block per role:
 }
 ```
 
-**Each role points at whichever provider you want**, as long as it speaks the OpenAI dialect
-(`/v1/chat/completions`). That includes local Ollama, Ollama Cloud, OpenRouter, Groq, vLLM, LM
-Studio. An empty `api_key` means *"do not send the Authorization header"* — the right thing for a
-local daemon that already holds its own credential.
+**Each role points at whichever server and model you want**, as long as the server speaks the OpenAI
+dialect (`/v1/chat/completions`). The *server* can be Ollama, vLLM, LM Studio, OpenRouter, Groq or
+anything compatible; the *model* is named per role. An empty `api_key` means *"do not send the
+Authorization header"* — the right thing for a local daemon that already holds its own credential.
 
 | field | what it is |
 |---|---|
 | `target` | locale code: `pt-BR`, `en`, `es-419`. It goes straight into the prompt |
-| `top_k`, `repeat_penalty` | knobs **only Ollama** accepts — which is why they live in the translator block |
+| `top_k`, `repeat_penalty` | knobs **only Ollama's API** accepts — which is why they live in the translator block |
 | `response_format` | `json_object`, so the reviewer answers with structured JSON |
 | `doc_destination` | `next_to_original` or a path; a call may override it |
 
@@ -294,7 +300,7 @@ force, the value comes out **masked**.
 cargo build --release
 cargo test --release                              # 30 tests
 bash packaging/build-deb.sh                       # builds the .deb
-python3 testes/tier2_test.py                      # proves the server under a real MCP client
+python3 tests/tier2_test.py                      # proves the server under a real MCP client
 ```
 
 The Tier 2 test deserves a word: a server that answers a hand-written JSON-RPC script is **not

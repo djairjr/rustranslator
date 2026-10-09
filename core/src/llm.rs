@@ -5,8 +5,9 @@
 //! accepts the Ollama-only knobs, honours `response_format`, and serves its cloud models
 //! without the caller sending a key — the daemon uses its own.
 //!
-//! Function names mirror the Python pipeline (`protect_slots`, `restre_slots`) so the port stays
-//! checkable line by line.
+//! Two stages, two shapes: `translate` turns a block into a translation; `review` turns a (source,
+//! translation) pair into a verdict. `protect_slots`/`restore_slots` sit under `translate` and keep
+//! markdown from being mangled on its way through the model.
 
 use crate::config::Role;
 use serde_json::{json, Map, Value};
@@ -85,9 +86,10 @@ pub type Slots = Vec<String>;
 /// The link is protected **whole** — protecting only `](url)` would leave a dangling `[` and
 /// the model would "fix" the structure by destroying content.
 ///
-/// This is a hand-written scanner rather than a regex on purpose. The original Python pattern
-/// used a lookbehind, which Rust's `regex` crate does not support — by design, since that is
-/// what buys it linear time. Scanning sidesteps the dependency and the limitation together.
+/// A hand-written scanner rather than a regex, on purpose: one of the rules — "a path, but not the
+/// tail of a longer path" — has to look at the character *before* a match, and `regex` has no
+/// lookbehind, by design, since that is what buys it its linear-time guarantee. Scanning sidesteps
+/// the limitation and keeps the guarantee, in a single pass over the block.
 pub fn protect_slots(text: &str) -> (String, Slots) {
     let mut slots: Slots = Vec::new();
     let mut out = String::with_capacity(text.len());
@@ -181,7 +183,7 @@ fn link_end(b: &[char], i: usize) -> Option<usize> {
 /// Asks the endpoint for a completion. `json` requests a structured answer.
 pub async fn generate(role: &Role, prompt: &str, json: bool) -> Result<String, LlmError> {
     // Only send the knobs the caller actually set. `top_k` and `repeat_penalty` are
-    // Ollama-only extensions; a strict provider would reject them, so they travel only when
+    // Ollama-API-only extensions; a strict provider would reject them, so they travel only when
     // present in the role that wants them.
     let mut body = Map::new();
     body.insert("model".into(), json!(role.model));

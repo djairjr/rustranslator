@@ -1,6 +1,6 @@
 [package]
 name = "rustranslator-core"
-description = "Motor de traducao: parser de blocos, tradutor local, revisor em nuvem, registro resumivel."
+description = "Translation engine: markdown block parser, local translator, cloud reviewer, resumable registry."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,10 @@ license.workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Cliente HTTP. `rustls` e' Rust puro: nao depende de OpenSSL do sistema, o que importa
-# porque este binario tambem vai empacotado.
+# The block parser's anchors, and the protection of markdown slots. `regex` is chosen for its
+# guarantee of linear time — no backtracking — which is exactly why it has no lookaround; the
+# patterns here are written to work without it.
+regex = "1"
+# HTTP client. `rustls` is pure Rust: it does not depend on the system's OpenSSL, which matters
+# because this binary also ships packaged.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

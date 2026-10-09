@@ -17,8 +17,12 @@ rustranslator — markdown translation: the local translator writes, the cloud r
 
 USAGE:
     rustranslator config show [--config <path>]
+    rustranslator parse <file.md>
     rustranslator mcp [--transport stdio|http] [--address 127.0.0.1:9720]
 
+  `parse` prints the document's blocks as JSON lines — one per block, with the line it came
+  from. It is how the parser is inspected, and how the port is compared against the golden
+  corpus: no model is called, so the comparison costs nothing and proves exactly one thing.
   `--transport stdio` (default) — the MCP client spawns the process and holds the pipes.
   `--transport http`            — serves on http://<address>/mcp; this is the mode systemd can
                                   keep alive, because it does not depend on a client.
@@ -50,6 +54,7 @@ fn main() -> ExitCode {
 
     match (rest.first().map(|s| s.as_str()), rest.get(1).map(|s| s.as_str())) {
         (Some("config"), Some("show")) => show_config(explicit.as_deref()),
+        (Some("parse"), Some(path)) => parse_file(path),
         (Some("mcp"), _) => serve_mcp(&args),
         (Some("config"), _) => {
             eprintln!("error: usage: rustranslator config show [--config <path>]");
@@ -107,6 +112,38 @@ fn show_config(explicit: Option<&std::path::Path>) -> ExitCode {
         eprintln!("{warning}");
     }
 
+    ExitCode::SUCCESS
+}
+
+/// Prints the document's blocks as JSON lines — one per block, in order.
+///
+/// This is the parser made visible, and it is what turns the port into something measurable: the
+/// output can be compared against the registry, block by block. The count goes
+/// to **stderr**, because stdout is the data and a reader piping it into a comparison should not
+/// have to skip a stray line.
+fn parse_file(path: &str) -> ExitCode {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("error: could not read {path}: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let blocks = rustranslator_core::parser::parse_document(&text);
+    for block in &blocks {
+        match serde_json::to_string(block) {
+            Ok(line) => println!("{line}"),
+            Err(e) => {
+                eprintln!("error: could not serialise a block: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    let prose = blocks.iter().filter(|b| b.kind == rustranslator_core::parser::Kind::Prose).count();
+    let table = blocks.len() - prose;
+    eprintln!("{} blocks ({prose} prose, {table} table)", blocks.len());
     ExitCode::SUCCESS
 }
 

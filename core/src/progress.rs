@@ -168,7 +168,7 @@ impl Progress {
         }
     }
 
-    /// One line that fits a terminal, in the same tone as the old pipeline.
+    /// One line that fits a terminal.
     pub fn summary(&self) -> String {
         let mut s = match self.targets {
             Some(a) => format!("{}/{}", self.processed, a),

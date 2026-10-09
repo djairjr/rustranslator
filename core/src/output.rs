@@ -37,7 +37,7 @@ pub fn translated_name(source: &Path, locale: &str) -> PathBuf {
 /// The final path of the translated document.
 ///
 /// `doc_destination` is the raw value from the call parameter or the configuration: empty or
-/// `junto_do_original` means "next to the original"; a path ending in a separator, or one that
+/// `next_to_original` means "next to the original"; a path ending in a separator, or one that
 /// is an existing directory, receives the generated name inside it; any other path is used
 /// as-is.
 ///
