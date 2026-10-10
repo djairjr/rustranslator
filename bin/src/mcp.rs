@@ -470,7 +470,7 @@ impl Server {
             .filter(|r| r.ok != Some(true))
             .collect();
         // Document order, so the list can be read against the file.
-        flagged.sort_by_key(|r| r.linha);
+        flagged.sort_by_key(|r| r.line);
 
         Ok(json(serde_json::json!({
             "document": document,

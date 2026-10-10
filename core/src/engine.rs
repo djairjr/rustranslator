@@ -146,13 +146,13 @@ fn selected(units: &[Block], from: usize, limit: usize) -> Vec<usize> {
 fn lost_record(id: String, unit: &Block, reason: String) -> Record {
     Record {
         id,
-        linha: unit.line,
-        fonte: unit.text.clone(),
-        traducao: None,
+        line: unit.line,
+        source: unit.text.clone(),
+        translation: None,
         ok: None,
         correction: None,
         final_text: None,
-        erro: Some(reason),
+        error: Some(reason),
     }
 }
 
@@ -188,7 +188,7 @@ pub async fn run(
         .map(|u| {
             recorded
                 .get(&registry::stable_id(u.line, &u.text))
-                .and_then(|r| r.final_text.clone().or_else(|| r.traducao.clone()))
+                .and_then(|r| r.final_text.clone().or_else(|| r.translation.clone()))
         })
         .collect();
 
@@ -253,47 +253,47 @@ pub async fn run(
                     summary.approved += 1;
                     Record {
                         id: id.clone(),
-                        linha: unit.line,
-                        fonte: unit.text.clone(),
-                        traducao: Some(machine.clone()),
+                        line: unit.line,
+                        source: unit.text.clone(),
+                        translation: Some(machine.clone()),
                         ok: Some(true),
                         correction: None,
                         final_text: Some(machine),
-                        erro: None,
+                        error: None,
                     }
                 }
                 Verdict::Corrected(correction) => {
                     summary.corrected += 1;
                     Record {
                         id: id.clone(),
-                        linha: unit.line,
-                        fonte: unit.text.clone(),
-                        traducao: Some(machine),
+                        line: unit.line,
+                        source: unit.text.clone(),
+                        translation: Some(machine),
                         ok: Some(false),
                         correction: Some(correction.clone()),
                         final_text: Some(correction),
-                        erro: None,
+                        error: None,
                     }
                 }
                 Verdict::Undecided { reason } => {
                     summary.undecided += 1;
                     Record {
                         id: id.clone(),
-                        linha: unit.line,
-                        fonte: unit.text.clone(),
-                        traducao: Some(machine.clone()),
+                        line: unit.line,
+                        source: unit.text.clone(),
+                        translation: Some(machine.clone()),
                         ok: None,
                         correction: None,
                         // Without a verdict the machine's text is all there is; a person decides.
                         final_text: Some(machine),
-                        erro: Some(reason),
+                        error: Some(reason),
                     }
                 }
             },
         };
 
         registry::append(&registry_path, &record)?;
-        translations[index] = record.final_text.clone().or_else(|| record.traducao.clone());
+        translations[index] = record.final_text.clone().or_else(|| record.translation.clone());
         summary.translated += 1;
 
         if options.verbose {
@@ -377,13 +377,13 @@ pub fn write_report(
     for (unit, record) in flagged {
         let (state, detail) = match record {
             None => ("not translated".to_string(), String::new()),
-            Some(r) if r.traducao.is_none() => (
+            Some(r) if r.translation.is_none() => (
                 "translation refused".to_string(),
-                r.erro.clone().unwrap_or_default(),
+                r.error.clone().unwrap_or_default(),
             ),
             Some(r) if r.ok.is_none() => (
                 "no verdict".to_string(),
-                r.erro.clone().unwrap_or_default(),
+                r.error.clone().unwrap_or_default(),
             ),
             Some(r) => (
                 "corrected".to_string(),
@@ -393,7 +393,7 @@ pub fn write_report(
         out.push_str(&format!("## line {} · {state}\n\n", unit.line));
         out.push_str(&format!("**source:** {}\n\n", unit.text));
         if let Some(r) = record {
-            if let Some(machine) = &r.traducao {
+            if let Some(machine) = &r.translation {
                 if machine != &unit.text {
                     out.push_str(&format!("**machine:** {machine}\n\n"));
                 }
@@ -438,13 +438,13 @@ mod tests {
     fn approved(line: usize, text: &str) -> Record {
         Record {
             id: registry::stable_id(line, text),
-            linha: line,
-            fonte: text.to_string(),
-            traducao: Some("traduzido".to_string()),
+            line,
+            source: text.to_string(),
+            translation: Some("translated".to_string()),
             ok: Some(true),
             correction: None,
-            final_text: Some("traduzido".to_string()),
-            erro: None,
+            final_text: Some("translated".to_string()),
+            error: None,
         }
     }
 
@@ -463,8 +463,8 @@ mod tests {
         recorded.insert(registry::stable_id(1, "approved source"), approved(1, "approved source"));
         let mut corrected = approved(2, "corrected source");
         corrected.ok = Some(false);
-        corrected.correction = Some("a versao certa".to_string());
-        corrected.final_text = Some("a versao certa".to_string());
+        corrected.correction = Some("the right version".to_string());
+        corrected.final_text = Some("the right version".to_string());
         recorded.insert(registry::stable_id(2, "corrected source"), corrected);
 
         write_report(&path, "doc", &units, &recorded).unwrap();
@@ -472,7 +472,7 @@ mod tests {
 
         assert!(text.contains("3 blocks, 2 flagged"), "{text}");
         assert!(text.contains("corrected source"), "{text}");
-        assert!(text.contains("a versao certa"), "{text}");
+        assert!(text.contains("the right version"), "{text}");
         assert!(text.contains("never done"), "{text}");
         assert!(!text.contains("approved source"), "an approved block was listed: {text}");
     }

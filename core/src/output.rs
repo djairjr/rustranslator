@@ -166,7 +166,7 @@ mod testes {
             Some("/tmp/a/doc.md"),
         )
         .unwrap_err();
-        assert!(e.contains("source"), "erro: {e}");
+        assert!(e.contains("source"), "error: {e}");
         // And also when the explicit path reaches the source by another route.
         let e = resolve_destination(
             Path::new("/tmp/a/doc.md"),
@@ -174,6 +174,6 @@ mod testes {
             Some("/tmp/a/../a/doc.md"),
         )
         .unwrap_err();
-        assert!(e.contains("source"), "erro: {e}");
+        assert!(e.contains("source"), "error: {e}");
     }
 }

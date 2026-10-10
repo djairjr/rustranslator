@@ -283,12 +283,15 @@ One JSON line per block, appended as the work happens and flushed immediately â€
 holds its work and its evidence in the same place:
 
 ```json
-{"id":"6:9ae100dda933a22d","linha":6,"fonte":"Run `./start-here.sh` and open the browser.","traducao":"Execute `./start-here.sh` e abra o navegador.","ok":true,"final":"Execute `./start-here.sh` e abra o navegador."}
+{"id":"6:9ae100dda933a22d","line":6,"source":"Run `./start-here.sh` and open the browser.","translation":"Execute `./start-here.sh` e abra o navegador.","ok":true,"final":"Execute `./start-here.sh` e abra o navegador."}
 ```
 
 `ok` is the reviewer's verdict: `true` approved, `false` corrected (the `correction` carries the
-replacement), `null` could not answer. The field names are the registry's own and are deliberately
-**not** translated: 262 rows already on disk use them, and renaming them would orphan that history.
+replacement), `null` could not answer. **The keys are English, and they are a format, not a
+message** â€” they never follow the locale, because a localized key would mean one registry per
+locale and every row already written would stop being readable. Rows recorded before that rule was
+settled carry the Portuguese keys (`linha`, `fonte`, `traducao`, `erro`); they are read through
+aliases, so no history is orphaned and nothing has to be rewritten.
 
 The `id` is a hash of the text with the line in front, and it does not move between runs. That is
 what makes the resumption work. The registry this project replaced hashed with a function that is

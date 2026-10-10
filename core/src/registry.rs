@@ -22,19 +22,24 @@ use crate::progress::Progress;
 
 /// One recorded block.
 ///
-/// The field names are the registry's own and are **not** translated: `linha`, `fonte`, `traducao`
-/// are the data format, and every row already on disk — 262 of them — uses them. Renaming them here
-/// would silently orphan that history.
+/// **The format is English, and it stays English.** These keys are a data format, not a message:
+/// a localized key would mean one registry per locale, and every row already on disk would stop
+/// being readable. The rows recorded before this project settled the rule carry Portuguese keys
+/// (`linha`, `fonte`, `traducao`, `erro`); they are read through `alias`, so no history is orphaned
+/// and nothing has to be rewritten. What *is* localized is what a person reads — see the locale
+/// rule in the project's spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
     /// The document line the block came from.
-    pub linha: usize,
+    #[serde(alias = "linha")]
+    pub line: usize,
     /// The source text.
-    pub fonte: String,
+    #[serde(alias = "fonte")]
+    pub source: String,
     /// What the machine produced. `None` when the model lost a protected slot.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub traducao: Option<String>,
+    #[serde(default, alias = "traducao", skip_serializing_if = "Option::is_none")]
+    pub translation: Option<String>,
     /// The reviewer's verdict: `true` approved, `false` corrected, `null` could not answer.
     #[serde(default)]
     pub ok: Option<bool>,
@@ -45,8 +50,8 @@ pub struct Record {
     #[serde(default, rename = "final", skip_serializing_if = "Option::is_none")]
     pub final_text: Option<String>,
     /// Why there is no verdict, when there is none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub erro: Option<String>,
+    #[serde(default, alias = "erro", skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// The id of a block: its line, and a hash of its text that does not move.
@@ -117,13 +122,13 @@ mod tests {
     fn record(line: usize, text: &str) -> Record {
         Record {
             id: stable_id(line, text),
-            linha: line,
-            fonte: text.to_string(),
-            traducao: Some(format!("{text} translated")),
+            line,
+            source: text.to_string(),
+            translation: Some(format!("{text} translated")),
             ok: Some(true),
             correction: None,
             final_text: Some(format!("{text} translated")),
-            erro: None,
+            error: None,
         }
     }
 
@@ -153,21 +158,59 @@ mod tests {
         let loaded = load(&path);
         assert_eq!(loaded.len(), 2);
         let r = &loaded[&stable_id(3, "alpha")];
-        assert_eq!(r.linha, 3);
-        assert_eq!(r.fonte, "alpha");
+        assert_eq!(r.line, 3);
+        assert_eq!(r.source, "alpha");
         assert_eq!(r.ok, Some(true));
         assert_eq!(r.final_text.as_deref(), Some("alpha translated"));
     }
 
     #[test]
-    fn the_wire_format_matches_the_rows_already_on_disk() {
-        // The corpus uses these keys and no others. A rename here would orphan 262 rows.
+    fn the_wire_format_is_english() {
+        // A data format is not a message: these keys do not follow the locale, and every reader
+        // in this program (the `status` tool among them) looks for exactly these.
         let json = serde_json::to_string(&record(7, "text")).unwrap();
-        for key in ["\"id\"", "\"linha\"", "\"fonte\"", "\"traducao\"", "\"ok\"", "\"final\""] {
+        for key in ["\"id\"", "\"line\"", "\"source\"", "\"translation\"", "\"ok\"", "\"final\""] {
             assert!(json.contains(key), "{key} missing from {json}");
         }
         assert!(!json.contains("correction"), "an absent key must be absent: {json}");
-        assert!(!json.contains("erro"), "an absent key must be absent: {json}");
+        assert!(!json.contains("error"), "an absent key must be absent: {json}");
+    }
+
+    #[test]
+    fn a_row_recorded_before_the_rename_still_reads() {
+        // The corpus already on disk uses the Portuguese keys. Reading them through `alias` is
+        // what keeps 262 rows useful; a rename without an alias would orphan every one of them.
+        let dir = test_dir("legacy");
+        let path = registry_path(&dir, "doc");
+        std::fs::write(
+            &path,
+            r#"{"id":"12:1","linha":12,"fonte":"a","traducao":"b","ok":false,"final":"c","erro":"e"}"#,
+        )
+        .unwrap();
+
+        let loaded = load(&path);
+        let r = &loaded["12:1"];
+        assert_eq!(r.line, 12);
+        assert_eq!(r.source, "a");
+        assert_eq!(r.translation.as_deref(), Some("b"));
+        assert_eq!(r.final_text.as_deref(), Some("c"));
+        assert_eq!(r.error.as_deref(), Some("e"));
+    }
+
+    #[test]
+    fn what_is_written_is_read_by_this_reader_under_the_same_key() {
+        // The writer and this reader disagreeing on the key is not hypothetical: it happened, and
+        // a hand-written fixture in the reader's own tests hid it. So this one goes through the
+        // real writer, from the format the old writer emitted.
+        let dir = test_dir("writerformat");
+        let path = registry_path(&dir, "doc");
+        let legacy = r#"{"id":"30:1","linha":30,"fonte":"a","traducao":"b","ok":true,"final":"b"}"#;
+        let record: Record = serde_json::from_str(legacy).unwrap();
+        append(&path, &record).unwrap();
+
+        let line = std::fs::read_to_string(&path).unwrap();
+        assert!(line.contains("\"line\":30"), "the writer must emit `line`: {line}");
+        assert_eq!(load(&path)["30:1"].line, 30);
     }
 
     #[test]

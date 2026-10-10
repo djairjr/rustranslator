@@ -55,6 +55,15 @@ def load_corpus(path):
         return [json.loads(line) for line in fh if line.strip()]
 
 
+def text_of(row):
+    """The corpus on disk uses the Portuguese keys; a corpus recorded today uses the English ones."""
+    return row.get("source", row.get("fonte", ""))
+
+
+def line_of(row):
+    return row.get("line", row.get("linha", 0))
+
+
 def classify(fonte, same_line, everywhere, raw_document):
     """Why a recorded block is not reproduced today.
 
@@ -112,7 +121,7 @@ def main():
     example = {}
     for row in rows:
         category = classify(
-            row["fonte"], by_line.get(row["linha"], []), all_texts, raw_document
+            text_of(row), by_line.get(line_of(row), []), all_texts, raw_document
         )
         tally[category] += 1
         example.setdefault(category, row)
@@ -138,10 +147,10 @@ def main():
         print(f"  {count:4d}  {labels[category]}")
         row = example.get(category)
         if row:
-            print(f"        e.g. line {row['linha']}: {row['fonte'][:78]!r}")
+            print(f"        e.g. line {line_of(row)}: {text_of(row)[:78]!r}")
 
     # Repeated work in the registry is a fact about it, worth seeing whenever it is read.
-    distinct = len({(r["linha"], r["fonte"]) for r in rows})
+    distinct = len({(line_of(r), text_of(r)) for r in rows})
     print()
     print(f"  distinct blocks in the corpus: {distinct} of {len(rows)} rows "
           f"({len(rows) - distinct} rows are the same block recorded twice)")
