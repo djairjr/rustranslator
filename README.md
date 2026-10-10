@@ -6,6 +6,20 @@ flagged residue ever needs to be read by a person.
 One executable: it translates a document, it serves as an MCP server, and it needs no runtime beyond
 itself.
 
+## Where this belongs: a specialised mini-harness
+
+This is one of a small family of programs built for my own use: **specialised mini-harnesses**. Each
+is a single program that puts a model on one repetitive, long-running job and gives an agent a
+narrow, task-shaped way to ask for the result — `submit` → `status` → `result`, with the state on
+disk. The reason for that shape is to take load off cloud models: whatever can be done on this
+machine, by a **smaller model specialised for that one job**, is done here, and the cloud keeps only
+what genuinely needs it. Here the translator is a local model, free, and the cloud reviewer is called
+on the residue rather than on the document — the local model does the volume, and the stronger model
+is spent where a person would otherwise have to read.
+
+Sibling project: [**yt-transcribe**](https://github.com/djairjr/yt-transcribe) — the same shape for
+speech, where the model runs in-process and there is no cloud call at all.
+
 ---
 
 ## The models
