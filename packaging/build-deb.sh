@@ -57,9 +57,10 @@ Description: Traducao de markdown com tradutor local e revisor em nuvem
  so' o residuo marcado precise ser lido por uma pessoa. Um executavel so':
  traduz e serve como servidor MCP, nos transportes stdio e HTTP.
  .
- ESTA VERSAO E' UM ESQUELETO: o motor de traducao ainda nao foi portado. O que
- existe e' a configuracao do provedor, o servidor MCP e a estrutura de
- progresso da tarefa. Veja o README em /usr/share/doc/rustranslator/.
+ O motor esta completo: percorre o documento bloco a bloco com o tradutor local,
+ grava cada veredicto no registro em disco e escreve o arquivo traduzido ao lado
+ do original. A retomada pula o que ja foi feito, entao parar e recomecar custa
+ zero. Veja o README em /usr/share/doc/rustranslator/.
  .
  O pacote NAO liga o servico sozinho -- copie config.example.json para
  ~/.config/rustranslator/config.json, feche a permissao (chmod 600) e rode

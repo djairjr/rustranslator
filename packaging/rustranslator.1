@@ -1,4 +1,4 @@
-.TH RUSTRANSLATOR 1 "2026-10-09" "rustranslator 0.1.0" "User Commands"
+.TH RUSTRANSLATOR 1 "2026-10-10" "rustranslator 0.1.1" "User Commands"
 .SH NAME
 rustranslator \- markdown translation with a local translator and a cloud reviewer
 .SH SYNOPSIS
@@ -19,7 +19,10 @@ translates markdown documentation in short blocks: a local model writes the tran
 cloud model reviews it, so that only the flagged residue needs to be read by a person.
 .PP
 The program also exposes itself as a Model Context Protocol (MCP) server, for agents that speak
-that protocol. It offers four tools: echo, progress, translate and review.
+that protocol. It offers seven tools: echo, submit, status, result, cancel, translate and
+review. A whole document takes three calls -- submit, then status, then result -- because submit
+returns at once and the work runs in the background; cancel is read between blocks, and every
+block already done stays in the registry.
 .SH COMMANDS
 .TP
 .B config show

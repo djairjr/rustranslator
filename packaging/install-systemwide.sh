@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Instala o rustranslator no sistema e liga o servico MCP no systemd do usuario.
 #
+# PREFIRA O PACOTE: `bash packaging/build-deb.sh` gera o .deb, que instala o mesmo binario mais o
+# manual e o unit EMPACOTADO em /usr/lib/systemd/user/. Este script aqui e' o caminho sem dpkg, e o
+# unit que ele usa mora em ~/.config/systemd/user/ — que tem PRECEDENCIA sobre o empacotado.
+#
 # Duas metades, de proposito:
-#   * o BINARIO vai para /usr/local/bin — do sistema, qualquer usuario executa (precisa de root);
+#   * o BINARIO vai para /usr/bin — do sistema, qualquer usuario executa (precisa de root);
 #   * o SERVICO e' um unit do USUARIO — ele le ~/.config/rustranslator/config.json, onde esta'
 #     o token. Um servico de sistema rodaria como root e nao acharia a config de ninguem.
 #
