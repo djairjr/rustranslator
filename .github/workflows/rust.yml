@@ -32,10 +32,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --release --verbose
 
       - name: Run the tests
         run: cargo test --release --verbose
 
       - name: Smoke — the binary starts and prints its help
+        # `cargo build` without --release only fills target/debug, and `cargo test --release` builds
+        # the test harness rather than the executable, so the first version of this step looked for a
+        # file that was never produced. The profile is what a release ships: build it as one.
         run: ./target/release/rustranslator --help
