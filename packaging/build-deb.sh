@@ -6,7 +6,14 @@
 #   vai     /usr/bin/rustranslator                     o binario
 #           /usr/lib/systemd/user/rustranslator.service   o servico (do usuario, nao do sistema)
 #           /usr/share/man/man1/rustranslator.1        o manual
-#           /usr/share/doc/rustranslator/              README, LICENSE, config.example.json
+#           /usr/share/doc/rustranslator/              README, LICENSE, copyright,
+#                                                      config.example.json
+#
+#   O `copyright` e' machine-readable e diz a verdade sobre o que o binario carrega: os crates
+#   linkados NESTE alvo (de `cargo tree`, nao do lock file, que lista tambem alvos que este pacote
+#   nao constroi) e o texto de cada licenca, copiado da fonte do crate. Ele e' GERADO:
+#       python3 packaging/gen-copyright.py          # regenera depois de mexer em dependencia
+#       python3 packaging/gen-copyright.py --check  # falha se o arquivo estiver velho
 #
 #   NAO vai nenhum segredo. Nao existe token neste projeto — a configuracao de verdade mora em
 #   ~/.config/rustranslator/config.json, do usuario, e o pacote so' instala o EXEMPLO, com o
@@ -29,6 +36,24 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# O guarda que evita a classe de erro que ja' custou caro aqui: documento dentro do artefato citando
+# versao que nao e' a que esta sendo empacotada (o manual ja' saiu com 0.1.0, o README ja' apontou o
+# pacote velho). A fonte da verdade e' o Cargo.toml; se um documento discordar, o build para.
+stale=$(grep -HoE "rustranslator[_ ]0\.1\.[0-9]+" README.md packaging/rustranslator.1 | grep -v "$VERSION" || true)
+if [ -n "$stale" ]; then
+    echo "erro: documento cita versao diferente de $VERSION:" >&2
+    echo "$stale" >&2
+    exit 1
+fi
+grep -q "rustranslator_${VERSION}_" README.md || {
+    echo "erro: o README nao cita o pacote rustranslator_${VERSION}_ -- atualize-o" >&2
+    exit 1
+}
+python3 packaging/gen-copyright.py --check || {
+    echo "erro: o copyright do pacote esta' velho -- rode: python3 packaging/gen-copyright.py" >&2
+    exit 1
+}
+
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/rustranslator-deb.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -36,6 +61,7 @@ install -Dm755 "$BIN"                            "$STAGE/usr/bin/rustranslator"
 install -Dm644 packaging/rustranslator.service   "$STAGE/usr/lib/systemd/user/rustranslator.service"
 install -Dm644 packaging/rustranslator.1         "$STAGE/usr/share/man/man1/rustranslator.1"
 install -Dm644 packaging/config.example.json     "$STAGE/usr/share/doc/rustranslator/config.example.json"
+install -Dm644 packaging/copyright                "$STAGE/usr/share/doc/rustranslator/copyright"
 install -Dm644 README.md                         "$STAGE/usr/share/doc/rustranslator/README.md"
 install -Dm644 LICENSE                           "$STAGE/usr/share/doc/rustranslator/LICENSE"
 gzip -9n -c packaging/rustranslator.1 > "$STAGE/usr/share/man/man1/rustranslator.1.gz"

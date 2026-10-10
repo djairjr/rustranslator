@@ -74,7 +74,7 @@ leaving it in English.
 ### Debian package
 
 ```bash
-sudo dpkg -i rustranslator_0.1.2_amd64.deb
+sudo dpkg -i rustranslator_0.1.3_amd64.deb
 ```
 
 The package installs the binary at `/usr/bin/rustranslator`, the service at
