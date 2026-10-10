@@ -162,7 +162,14 @@ impl Progress {
             Some(false) => self.corrected += 1,
             None => self.undecided += 1,
         }
-        if let Some(line) = v.get("line").and_then(|l| l.as_u64()) {
+        // This walks the raw JSON, so the `alias` on `registry::Record` never reaches here — the
+        // old spelling has to be accepted at this level too. One format, two readers: the test that
+        // catches them disagreeing has to go through the real writer.
+        if let Some(line) = v
+            .get("line")
+            .or_else(|| v.get("linha"))
+            .and_then(|l| l.as_u64())
+        {
             let line = line as usize;
             self.last_line = Some(self.last_line.map_or(line, |m| m.max(line)));
         }
@@ -185,11 +192,11 @@ impl Progress {
             s.push_str(&format!(" ({t:.0}%)"));
         }
         if let Some(p) = self.percent {
-            s.push_str(&format!(" · {p:.0}% do document"));
+            s.push_str(&format!(" · {p:.0}% of the document"));
         }
         s.push_str(&format!(" · {}", self.situation.as_text()));
         if self.unreadable > 0 {
-            s.push_str(&format!(" · ATENCAO: {} lines unreadable", self.unreadable));
+            s.push_str(&format!(" · WARNING: {} lines unreadable", self.unreadable));
         }
         s
     }
@@ -199,32 +206,69 @@ impl Progress {
 mod tests {
     use super::*;
 
-    fn test_dir(nome: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rustranslator-progresso-{nome}"));
+    fn test_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("rustranslator-progress-{name}"));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
     }
 
-    /// Three lines: approved, corrected, undecided.
-    const REGISTRO: &str = concat!(
-        r#"{"id":"12:1","line":12,"fonte":"a","traducao":"a","ok":true,"final":"a"}"#,
+    /// Three lines in the format this program writes today: approved, corrected, undecided.
+    const REGISTRY: &str = concat!(
+        r#"{"id":"12:1","line":12,"source":"a","translation":"a","ok":true,"final":"a"}"#,
         "\n",
-        r#"{"id":"15:2","line":15,"fonte":"b","traducao":"b","ok":false,"final":"b2"}"#,
+        r#"{"id":"15:2","line":15,"source":"b","translation":"b","ok":false,"final":"b2"}"#,
         "\n",
-        r#"{"id":"20:3","line":20,"fonte":"c","traducao":null,"ok":null,"erro":"slot perdido"}"#,
+        r#"{"id":"20:3","line":20,"source":"c","translation":null,"ok":null,"error":"slot lost"}"#,
         "\n",
     );
 
+    /// A registry recorded before the keys were settled still contributes to progress.
+    #[test]
+    fn a_row_in_the_old_key_spelling_still_counts() {
+        let d = test_dir("legacykeys");
+        std::fs::write(
+            Progress::registry_path(&d, "doc"),
+            r#"{"id":"7:1","linha":7,"fonte":"a","traducao":"b","ok":true,"final":"b"}"#,
+        )
+        .unwrap();
+        let p = Progress::read(&d, "doc").unwrap();
+        assert_eq!(p.unreadable, 0, "the reader must still read the old keys");
+        assert_eq!(p.approved, 1);
+        assert_eq!(p.last_line, Some(7));
+    }
+
+    /// The writer and this reader have to agree on the key that carries the line, and the only
+    /// way to prove it is to go through the writer itself.
+    ///
+    /// Measured 10/10/2026: they did not agree — the writer emitted `linha` and this module read
+    /// `line` — so `last_line` was absent in every real run, while the hand-written fixture above
+    /// (already spelled `line`) kept this module green.
+    #[test]
+    fn the_real_writer_and_this_reader_agree_on_the_line_key() {
+        use crate::registry;
+        let d = test_dir("writeragreement");
+        let path = Progress::registry_path(&d, "doc");
+        let record: registry::Record =
+            serde_json::from_str(r#"{"id":"30:1","linha":30,"fonte":"a","traducao":"b","ok":true}"#)
+                .unwrap();
+        registry::append(&path, &record).unwrap();
+
+        let p = Progress::read(&d, "doc").unwrap();
+        assert_eq!(p.last_line, Some(30), "writer and reader disagree on the line key");
+        assert_eq!(p.processed, 1);
+        assert_eq!(p.unreadable, 0);
+    }
+
     #[test]
     fn counts_the_three_verdicts() {
-        let d = test_dir("conta");
-        std::fs::write(Progress::registry_path(&d, "doc"), REGISTRO).unwrap();
+        let d = test_dir("counts");
+        std::fs::write(Progress::registry_path(&d, "doc"), REGISTRY).unwrap();
         let p = Progress::read(&d, "doc").unwrap();
         assert_eq!((p.processed, p.approved, p.corrected, p.undecided), (3, 1, 1, 1));
         assert_eq!(p.last_line, Some(20));
-        assert_eq!(p.correction_rate, Some(50.0)); // 1 corrigido de 2 com veredito
-        assert_eq!(p.targets, None, "sem task, o total e' desconhecido — nao inventamos");
+        assert_eq!(p.correction_rate, Some(50.0)); // 1 corrected out of 2 with a verdict
+        assert_eq!(p.targets, None, "with no task the total is unknown — it is not invented");
         assert_eq!(p.percent, None);
         assert!(p.summary().contains("50%"), "summary: {}", p.summary());
     }
@@ -232,7 +276,7 @@ mod tests {
     #[test]
     fn the_task_provides_the_denominator() {
         let d = test_dir("task");
-        std::fs::write(Progress::registry_path(&d, "doc"), REGISTRO).unwrap();
+        std::fs::write(Progress::registry_path(&d, "doc"), REGISTRY).unwrap();
         std::fs::write(
             Progress::task_path(&d, "doc"),
             r#"{"document":"README.md","targets":12,"situation":"running","pid":4242,"started_at":1000}"#,
@@ -258,10 +302,10 @@ mod tests {
 
     #[test]
     fn an_unreadable_line_is_counted_and_flagged() {
-        let d = test_dir("ilegivel");
+        let d = test_dir("unreadable");
         std::fs::write(
             Progress::registry_path(&d, "doc"),
-            format!("{REGISTRO}isto nao e json\n"),
+            format!("{REGISTRY}this is not json\n"),
         )
         .unwrap();
         let p = Progress::read(&d, "doc").unwrap();

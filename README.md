@@ -6,6 +6,20 @@ flagged residue ever needs to be read by a person.
 One executable: it translates a document, it serves as an MCP server, and it needs no runtime beyond
 itself.
 
+## Where this belongs: a specialised mini-harness
+
+This is one of a small family of programs built for my own use: **specialised mini-harnesses**. Each
+is a single program that puts a model on one repetitive, long-running job and gives an agent a
+narrow, task-shaped way to ask for the result — `submit` → `status` → `result`, with the state on
+disk. The reason for that shape is to take load off cloud models: whatever can be done on this
+machine, by a **smaller model specialised for that one job**, is done here, and the cloud keeps only
+what genuinely needs it. Here the translator is a local model, free, and the cloud reviewer is called
+on the residue rather than on the document — the local model does the volume, and the stronger model
+is spent where a person would otherwise have to read.
+
+Sibling project: [**yt-transcribe**](https://github.com/djairjr/yt-transcribe) — the same shape for
+speech, where the model runs in-process and there is no cloud call at all.
+
 ---
 
 ## The models
@@ -74,7 +88,7 @@ leaving it in English.
 ### Debian package
 
 ```bash
-sudo dpkg -i rustranslator_0.1.2_amd64.deb
+sudo dpkg -i rustranslator_0.1.3_amd64.deb
 ```
 
 The package installs the binary at `/usr/bin/rustranslator`, the service at
@@ -283,12 +297,15 @@ One JSON line per block, appended as the work happens and flushed immediately �
 holds its work and its evidence in the same place:
 
 ```json
-{"id":"6:9ae100dda933a22d","linha":6,"fonte":"Run `./start-here.sh` and open the browser.","traducao":"Execute `./start-here.sh` e abra o navegador.","ok":true,"final":"Execute `./start-here.sh` e abra o navegador."}
+{"id":"6:9ae100dda933a22d","line":6,"source":"Run `./start-here.sh` and open the browser.","translation":"Execute `./start-here.sh` e abra o navegador.","ok":true,"final":"Execute `./start-here.sh` e abra o navegador."}
 ```
 
 `ok` is the reviewer's verdict: `true` approved, `false` corrected (the `correction` carries the
-replacement), `null` could not answer. The field names are the registry's own and are deliberately
-**not** translated: 262 rows already on disk use them, and renaming them would orphan that history.
+replacement), `null` could not answer. **The keys are English, and they are a format, not a
+message** — they never follow the locale, because a localized key would mean one registry per
+locale and every row already written would stop being readable. Rows recorded before that rule was
+settled carry the Portuguese keys (`linha`, `fonte`, `traducao`, `erro`); they are read through
+aliases, so no history is orphaned and nothing has to be rewritten.
 
 The `id` is a hash of the text with the line in front, and it does not move between runs. That is
 what makes the resumption work. The registry this project replaced hashed with a function that is

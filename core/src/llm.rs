@@ -304,7 +304,7 @@ pub async fn review(
     );
     let raw = generate(role, &prompt, true).await?;
     let d: Value = serde_json::from_str(&raw).map_err(|e| LlmError::Response {
-        reason: format!("revisor nao devolveu JSON: {e} — {raw:?}"),
+        reason: format!("the reviewer returned no JSON: {e} — {raw:?}"),
     })?;
 
     if d.get("ok").and_then(Value::as_bool) == Some(true) {

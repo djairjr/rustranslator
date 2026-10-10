@@ -1,22 +1,41 @@
 name: Rust
 
+# What this runs, and what it deliberately does NOT run.
+#
+# This project's engine is pure Rust — no system libraries, no FFmpeg, no model — so `cargo build`
+# plus `cargo test` covers it: 61 tests, and the parser instrument `rustranslator parse` needs
+# nothing but the binary.
+#
+# NOT covered here, on purpose:
+#   * tests/tier2_test.py — needs the `mcp` python client and a running server;
+#   * anything that calls a provider — the translator and the reviewer need an endpoint, and a
+#     cloud reviewer needs a credential;
+#   * the parser differential against the 262-block corpus — it needs the corpus, which lives in the
+#     user's data directory, not in the repository.
+# Those are run by hand and documented in the README. A green check that silently skipped them
+# would be worth less than none.
+
 on:
   push:
-    branches: [ "master" ]
+    branches: [main]
   pull_request:
-    branches: [ "master" ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v5
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run the tests
+        run: cargo test --release --verbose
+
+      - name: Smoke — the binary starts and prints its help
+        run: ./target/release/rustranslator --help

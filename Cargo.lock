@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "rustranslator"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "axum",
  "rmcp",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "rustranslator-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "markdown",
  "regex",
